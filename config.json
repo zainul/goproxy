@@ -19,8 +19,30 @@
       "rate_limiter": {
         "type": "sliding_window",
         "limit": 100,
-        "window": 60
-      }
+        "window": 60,
+        "dynamic": true,
+        "damage_level": 0.5,
+        "catastrophic_level": 0.8,
+        "healthy_increment": 0.01,
+        "unhealthy_decrement": 0.01,
+        "priority": 1
+      },
+      "endpoints": [
+        {
+          "path": "/api/high",
+          "rate_limiter": {
+            "type": "token_bucket",
+            "limit": 50,
+            "window": 10,
+            "dynamic": true,
+            "damage_level": 0.3,
+            "catastrophic_level": 0.7,
+            "healthy_increment": 0.02,
+            "unhealthy_decrement": 0.02,
+            "priority": 3
+          }
+        }
+      ]
     }
   ]
 }

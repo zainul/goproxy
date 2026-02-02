@@ -33,8 +33,26 @@ func TestLoadConfig_JSON(t *testing.T) {
 				"rate_limiter": {
 					"type": "sliding_window",
 					"limit": 100,
-					"window": 60
-				}
+					"window": 60,
+					"dynamic": true,
+					"damage_level": 0.5,
+					"catastrophic_level": 0.8,
+					"healthy_increment": 0.01,
+					"unhealthy_decrement": 0.01,
+					"priority": 1
+				},
+				"endpoints": [
+					{
+						"path": "/api/test",
+						"rate_limiter": {
+							"type": "token_bucket",
+							"limit": 50,
+							"window": 10,
+							"dynamic": false,
+							"priority": 2
+						}
+					}
+				]
 			}
 		]
 	}`
@@ -73,6 +91,15 @@ func TestLoadConfig_JSON(t *testing.T) {
 
 	assert.Equal(t, "sliding_window", config.Backends[0].RateLimiter.Type)
 	t.Logf("Assertion: Backends[0].RateLimiter.Type == 'sliding_window' - PASSED")
+
+	assert.True(t, config.Backends[0].RateLimiter.Dynamic)
+	t.Logf("Assertion: Backends[0].RateLimiter.Dynamic == true - PASSED")
+
+	assert.Len(t, config.Backends[0].Endpoints, 1)
+	t.Logf("Assertion: len(Backends[0].Endpoints) == 1 - PASSED")
+
+	assert.Equal(t, "/api/test", config.Backends[0].Endpoints[0].Path)
+	t.Logf("Assertion: Backends[0].Endpoints[0].Path == '/api/test' - PASSED")
 }
 
 func TestLoadConfig_YAML(t *testing.T) {
@@ -97,6 +124,12 @@ backends:
       type: "token_bucket"
       limit: 50
       window: 10
+      dynamic: true
+      damage_level: 0.3
+      catastrophic_level: 0.7
+      healthy_increment: 0.02
+      unhealthy_decrement: 0.02
+      priority: 2
 `
 	tmpFile, err := os.CreateTemp("", "config")
 	assert.NoError(t, err)
@@ -137,4 +170,10 @@ backends:
 
 	assert.Equal(t, "token_bucket", config.Backends[0].RateLimiter.Type)
 	t.Logf("Assertion: Backends[0].RateLimiter.Type == 'token_bucket' - PASSED")
+
+	assert.True(t, config.Backends[0].RateLimiter.Dynamic)
+	t.Logf("Assertion: Backends[0].RateLimiter.Dynamic == true - PASSED")
+
+	assert.Equal(t, 0.02, config.Backends[0].RateLimiter.HealthyIncrement)
+	t.Logf("Assertion: Backends[0].RateLimiter.HealthyIncrement == 0.02 - PASSED")
 }

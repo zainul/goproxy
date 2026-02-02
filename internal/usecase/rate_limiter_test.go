@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"goproxy/internal/entity"
 	"goproxy/pkg/constants"
 	"goproxy/pkg/utils"
 )
@@ -31,7 +32,8 @@ func TestRateLimiterManager_Allow_SlidingWindow(t *testing.T) {
 	t.Logf("Input: backend='http://backend', config={Type: 'sliding_window', Limit: 100, Window: 60}")
 
 	mockRepo := &MockRateLimiterRepository{}
-	manager := NewRateLimiterManager(mockRepo)
+	mockCB := &MockCircuitBreakerUsecase{}
+	manager := NewRateLimiterManager(mockRepo, mockCB)
 
 	config := utils.RateLimiterConfig{
 		Type:   constants.RateLimiterTypeSlidingWindow,
@@ -61,7 +63,8 @@ func TestRateLimiterManager_Allow_TokenBucket(t *testing.T) {
 	t.Logf("Input: backend='http://backend', config={Type: 'token_bucket', Limit: 50, Window: 10}")
 
 	mockRepo := &MockRateLimiterRepository{}
-	manager := NewRateLimiterManager(mockRepo)
+	mockCB := &MockCircuitBreakerUsecase{}
+	manager := NewRateLimiterManager(mockRepo, mockCB)
 
 	config := utils.RateLimiterConfig{
 		Type:   constants.RateLimiterTypeTokenBucket,
@@ -91,7 +94,8 @@ func TestRateLimiterManager_Allow_NoLimiter(t *testing.T) {
 	t.Logf("Input: backend='http://backend' with no limiter added")
 
 	mockRepo := &MockRateLimiterRepository{}
-	manager := NewRateLimiterManager(mockRepo)
+	mockCB := &MockCircuitBreakerUsecase{}
+	manager := NewRateLimiterManager(mockRepo, mockCB)
 
 	ctx := context.Background()
 	t.Logf("Action: Allow(ctx, 'http://backend')")
@@ -110,7 +114,8 @@ func BenchmarkRateLimiterManager_Allow(b *testing.B) {
 	b.Logf("Input: Parallel calls to Allow with sliding window config")
 
 	mockRepo := &MockRateLimiterRepository{}
-	manager := NewRateLimiterManager(mockRepo)
+	mockCB := &MockCircuitBreakerUsecase{}
+	manager := NewRateLimiterManager(mockRepo, mockCB)
 
 	config := utils.RateLimiterConfig{
 		Type:   constants.RateLimiterTypeSlidingWindow,
@@ -132,4 +137,80 @@ func BenchmarkRateLimiterManager_Allow(b *testing.B) {
 		}
 	})
 	b.Logf("Output: Completed %d iterations", b.N)
+}
+
+func TestRateLimiterManager_Allow_Dynamic_Healthy(t *testing.T) {
+	t.Logf("Scenario: Dynamic Rate Limiter with Healthy Upstream")
+	t.Logf("Input: backend='http://backend' with dynamic config, upstream healthy")
+
+	mockRepo := &MockRateLimiterRepository{}
+	mockCB := &MockCircuitBreakerUsecase{}
+	manager := NewRateLimiterManager(mockRepo, mockCB)
+
+	config := utils.RateLimiterConfig{
+		Type:               constants.RateLimiterTypeSlidingWindow,
+		Limit:              100,
+		Window:             60,
+		Dynamic:            true,
+		HealthyIncrement:   0.01,
+		Priority:           1,
+	}
+	manager.AddLimiter("http://backend", config)
+
+	mockCB.On("GetState", "http://backend").Return(entity.StateClosed) // Healthy
+
+	ctx := context.Background()
+	// Expect adjusted limit: 100 + 1 (increment) = 101, then * 1.1 (priority) = 111
+	mockRepo.On("Allow", ctx, constants.RateLimitPrefix+"http://backend", 111, time.Minute).Return(true, nil)
+
+	t.Logf("Action: Allow(ctx, 'http://backend') with healthy upstream")
+	allowed, err := manager.Allow(ctx, "http://backend")
+	t.Logf("Output: allowed=%t, err=%v", allowed, err)
+
+	assert.NoError(t, err)
+	t.Logf("Assertion: err == nil - PASSED")
+
+	assert.True(t, allowed)
+	t.Logf("Assertion: allowed == true - PASSED")
+
+	mockRepo.AssertExpectations(t)
+	mockCB.AssertExpectations(t)
+}
+
+func TestRateLimiterManager_Allow_Dynamic_Unhealthy(t *testing.T) {
+	t.Logf("Scenario: Dynamic Rate Limiter with Unhealthy Upstream")
+	t.Logf("Input: backend='http://backend' with dynamic config, upstream open")
+
+	mockRepo := &MockRateLimiterRepository{}
+	mockCB := &MockCircuitBreakerUsecase{}
+	manager := NewRateLimiterManager(mockRepo, mockCB)
+
+	config := utils.RateLimiterConfig{
+		Type:                 constants.RateLimiterTypeSlidingWindow,
+		Limit:                100,
+		Window:               60,
+		Dynamic:              true,
+		UnhealthyDecrement:   0.01,
+		Priority:             1,
+	}
+	manager.AddLimiter("http://backend", config)
+
+	mockCB.On("GetState", "http://backend").Return(entity.StateOpen) // Unhealthy
+
+	ctx := context.Background()
+	// Expect adjusted limit: 100 * 0.99 (decrement) * 1.1 (priority) ≈ 108
+	mockRepo.On("Allow", ctx, constants.RateLimitPrefix+"http://backend", 108, time.Minute).Return(false, nil)
+
+	t.Logf("Action: Allow(ctx, 'http://backend') with unhealthy upstream")
+	allowed, err := manager.Allow(ctx, "http://backend")
+	t.Logf("Output: allowed=%t, err=%v", allowed, err)
+
+	assert.NoError(t, err)
+	t.Logf("Assertion: err == nil - PASSED")
+
+	assert.False(t, allowed)
+	t.Logf("Assertion: allowed == false - PASSED")
+
+	mockRepo.AssertExpectations(t)
+	mockCB.AssertExpectations(t)
 }

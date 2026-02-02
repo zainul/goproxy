@@ -11,9 +11,15 @@ import (
 
 // RateLimiterConfig holds configuration for rate limiter
 type RateLimiterConfig struct {
-	Type   string  `json:"type" yaml:"type"`     // "sliding_window" or "token_bucket"
-	Limit  int     `json:"limit" yaml:"limit"`   // requests per window for sliding, tokens for bucket
-	Window int     `json:"window" yaml:"window"` // window in seconds for sliding, refill rate per second for bucket
+	Type                 string  `json:"type" yaml:"type"`                                 // "sliding_window" or "token_bucket"
+	Limit                int     `json:"limit" yaml:"limit"`                               // requests per window for sliding, tokens for bucket
+	Window               int     `json:"window" yaml:"window"`                             // window in seconds for sliding, refill rate per second for bucket
+	Dynamic              bool    `json:"dynamic" yaml:"dynamic"`                           // enable dynamic rate limiting
+	DamageLevel          float64 `json:"damage_level" yaml:"damage_level"`                 // damage level threshold (e.g., 0.5 for 50%)
+	CatastrophicLevel    float64 `json:"catastrophic_level" yaml:"catastrophic_level"`     // catastrophic level threshold (e.g., 0.8)
+	HealthyIncrement     float64 `json:"healthy_increment" yaml:"healthy_increment"`      // percentage increment when healthy (e.g., 0.01 for 1%)
+	UnhealthyDecrement   float64 `json:"unhealthy_decrement" yaml:"unhealthy_decrement"`  // percentage decrement when unhealthy (e.g., 0.01 for 1%)
+	Priority             int     `json:"priority" yaml:"priority"`                         // priority level (higher = more important)
 }
 
 // CircuitBreakerConfig holds configuration for a circuit breaker
@@ -25,11 +31,18 @@ type CircuitBreakerConfig struct {
 	WindowSize       int           `json:"window_size" yaml:"window_size"`   // for ringbuffer: count, for sliding_window: seconds
 }
 
+// EndpointConfig holds configuration for specific endpoints
+type EndpointConfig struct {
+	Path         string            `json:"path" yaml:"path"`                 // endpoint path (e.g., "/api/v1/*")
+	RateLimiter  RateLimiterConfig `json:"rate_limiter" yaml:"rate_limiter"`
+}
+
 // BackendConfig holds configuration for a backend service
 type BackendConfig struct {
 	URL            string               `json:"url" yaml:"url"`
 	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker"`
 	RateLimiter    RateLimiterConfig    `json:"rate_limiter" yaml:"rate_limiter"`
+	Endpoints      []EndpointConfig     `json:"endpoints" yaml:"endpoints"`
 }
 
 // RedisConfig holds Redis configuration

@@ -53,8 +53,30 @@ Create a `config.json` or `config.yaml` file in the root directory.
       "rate_limiter": {
         "type": "sliding_window",
         "limit": 100,
-        "window": 60
-      }
+        "window": 60,
+        "dynamic": true,
+        "damage_level": 0.5,
+        "catastrophic_level": 0.8,
+        "healthy_increment": 0.01,
+        "unhealthy_decrement": 0.01,
+        "priority": 1
+      },
+      "endpoints": [
+        {
+          "path": "/api/high",
+          "rate_limiter": {
+            "type": "token_bucket",
+            "limit": 50,
+            "window": 10,
+            "dynamic": true,
+            "damage_level": 0.3,
+            "catastrophic_level": 0.7,
+            "healthy_increment": 0.02,
+            "unhealthy_decrement": 0.02,
+            "priority": 3
+          }
+        }
+      ]
     },
     {
       "url": "http://backend2:8080",
@@ -96,6 +118,24 @@ backends:
       type: "sliding_window"
       limit: 100
       window: 60
+      dynamic: true
+      damage_level: 0.5
+      catastrophic_level: 0.8
+      healthy_increment: 0.01
+      unhealthy_decrement: 0.01
+      priority: 1
+    endpoints:
+      - path: "/api/high"
+        rate_limiter:
+          type: "token_bucket"
+          limit: 50
+          window: 10
+          dynamic: true
+          damage_level: 0.3
+          catastrophic_level: 0.7
+          healthy_increment: 0.02
+          unhealthy_decrement: 0.02
+          priority: 3
   - url: "http://backend2:8080"
     circuit_breaker:
       failure_threshold: 0.5
@@ -117,6 +157,13 @@ backends:
     - `type`: "sliding_window" or "token_bucket".
     - `limit`: Max requests/tokens.
     - `window`: Window in seconds for sliding, rate per second for token bucket.
+    - `dynamic`: Enable dynamic rate limiting based on upstream health.
+    - `damage_level`: Damage threshold (e.g., 0.5).
+    - `catastrophic_level`: Catastrophic threshold (e.g., 0.8).
+    - `healthy_increment`: Percentage increment when healthy (e.g., 0.01).
+    - `unhealthy_decrement`: Percentage decrement when unhealthy (e.g., 0.01).
+    - `priority`: Priority level (higher = more lenient limits).
+- `endpoints`: List of endpoint-specific configurations with path and rate_limiter.
   - `url`: Backend URL.
   - `circuit_breaker`:
     - `failure_threshold`: Threshold for failures (integer for ringbuffer, float for sliding window rate).

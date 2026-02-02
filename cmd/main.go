@@ -30,13 +30,16 @@ func main() {
 
 	// Initialize usecases
 	cbManager := usecase.NewCircuitBreakerManager()
-	rlManager := usecase.NewRateLimiterManager(rlRepo)
+	rlManager := usecase.NewRateLimiterManager(rlRepo, cbManager)
 	proxy := usecase.NewHTTPProxy(cbManager, rlManager, config.EnableSingleflight)
 
 	// Add circuit breakers and rate limiters for backends
 	for _, backend := range config.Backends {
 		cbManager.AddBreaker(backend.URL, backend.CircuitBreaker)
 		rlManager.AddLimiter(backend.URL, backend.RateLimiter)
+		for _, endpoint := range backend.Endpoints {
+			rlManager.AddEndpointLimiter(backend.URL, endpoint.Path, endpoint.RateLimiter)
+		}
 	}
 
 	// HTTP handler
