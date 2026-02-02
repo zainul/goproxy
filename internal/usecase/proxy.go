@@ -1,12 +1,13 @@
 package usecase
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 
 	"golang.org/x/sync/singleflight"
+	"goproxy/pkg/constants"
+	"goproxy/pkg/errors"
 )
 
 // ProxyUsecase defines the interface for proxy operations
@@ -24,23 +25,41 @@ type ProxyResponse struct {
 // HTTPProxy implements ProxyUsecase
 type HTTPProxy struct {
 	cbManager          CircuitBreakerUsecase
+	rlManager          RateLimiterUsecase
 	sf                 singleflight.Group
 	enableSingleflight bool
 }
 
 // NewHTTPProxy creates a new HTTPProxy
-func NewHTTPProxy(cbManager CircuitBreakerUsecase, enableSingleflight bool) *HTTPProxy {
+func NewHTTPProxy(cbManager CircuitBreakerUsecase, rlManager RateLimiterUsecase, enableSingleflight bool) *HTTPProxy {
 	return &HTTPProxy{
 		cbManager:          cbManager,
+		rlManager:          rlManager,
 		enableSingleflight: enableSingleflight,
 	}
 }
 
 // ForwardRequest forwards the request to the backend
 func (p *HTTPProxy) ForwardRequest(w http.ResponseWriter, r *http.Request, backendURL string) error {
+	// Check rate limit first
+	allowed, err := p.rlManager.Allow(r.Context(), backendURL)
+	if err != nil {
+		appErr, ok := err.(*errors.AppError)
+		if ok {
+			http.Error(w, appErr.UserError(), http.StatusInternalServerError)
+		} else {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
+		return err
+	}
+	if !allowed {
+		http.Error(w, constants.ErrRateLimitExceededUser, http.StatusTooManyRequests)
+		return errors.NewRateLimitExceededError(backendURL, nil)
+	}
+
 	if !p.cbManager.CanExecute(backendURL) {
-		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
-		return fmt.Errorf("circuit breaker open for %s", backendURL)
+		http.Error(w, constants.ErrCircuitBreakerOpenUser, http.StatusServiceUnavailable)
+		return errors.NewCircuitBreakerOpenError(backendURL, nil)
 	}
 
 	// Use singleflight only for GET requests if enabled
@@ -90,14 +109,14 @@ func (p *HTTPProxy) doRequest(r *http.Request, backendURL string) (*ProxyRespons
 	target, err := url.Parse(backendURL)
 	if err != nil {
 		p.cbManager.RecordFailure(backendURL)
-		return nil, err
+		return nil, errors.NewInternalError("failed to parse backend URL", err)
 	}
 
 	// Create new request
 	req, err := http.NewRequest(r.Method, target.String()+r.URL.Path, r.Body)
 	if err != nil {
 		p.cbManager.RecordFailure(backendURL)
-		return nil, err
+		return nil, errors.NewInternalError("failed to create request", err)
 	}
 
 	// Copy headers
@@ -110,7 +129,7 @@ func (p *HTTPProxy) doRequest(r *http.Request, backendURL string) (*ProxyRespons
 	resp, err := client.Do(req)
 	if err != nil {
 		p.cbManager.RecordFailure(backendURL)
-		return nil, err
+		return nil, errors.NewInternalError("failed to execute request", err)
 	}
 	defer resp.Body.Close()
 
@@ -118,7 +137,7 @@ func (p *HTTPProxy) doRequest(r *http.Request, backendURL string) (*ProxyRespons
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		p.cbManager.RecordFailure(backendURL)
-		return nil, err
+		return nil, errors.NewInternalError("failed to read response body", err)
 	}
 
 	// Check status

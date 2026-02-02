@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"goproxy/internal/entity"
+	"goproxy/pkg/constants"
 	"goproxy/pkg/utils"
 )
 
@@ -74,7 +75,7 @@ func (m *CircuitBreakerManager) RecordSuccess(backendURL string) {
 	}
 
 	// Record in counter
-	if breaker.CounterType == entity.CounterRingBuffer {
+	if breaker.CounterType == constants.CounterTypeRingBuffer {
 		breaker.RingBuffer.Record(true)
 	} else {
 		breaker.SlidingWindow.Record(true)
@@ -101,7 +102,7 @@ func (m *CircuitBreakerManager) RecordFailure(backendURL string) {
 	}
 
 	// Record in counter
-	if breaker.CounterType == entity.CounterRingBuffer {
+	if breaker.CounterType == constants.CounterTypeRingBuffer {
 		breaker.RingBuffer.Record(false)
 	} else {
 		breaker.SlidingWindow.Record(false)
@@ -134,7 +135,7 @@ func (m *CircuitBreakerManager) GetState(backendURL string) entity.State {
 
 // checkFailureThreshold checks if failure threshold is exceeded
 func (m *CircuitBreakerManager) checkFailureThreshold(breaker *entity.CircuitBreaker) bool {
-	if breaker.CounterType == entity.CounterRingBuffer {
+	if breaker.CounterType == constants.CounterTypeRingBuffer {
 		failures := breaker.RingBuffer.CountFailures()
 		return float64(failures) >= breaker.FailureThreshold
 	} else {
@@ -145,7 +146,7 @@ func (m *CircuitBreakerManager) checkFailureThreshold(breaker *entity.CircuitBre
 
 // checkSuccessThreshold checks if success threshold is met in half-open
 func (m *CircuitBreakerManager) checkSuccessThreshold(breaker *entity.CircuitBreaker) bool {
-	if breaker.CounterType == entity.CounterRingBuffer {
+	if breaker.CounterType == constants.CounterTypeRingBuffer {
 		// For ringbuffer, count successes
 		successes := breaker.RingBuffer.WindowSize() - breaker.RingBuffer.CountFailures() // assuming full window
 		return float64(successes) >= breaker.SuccessThreshold

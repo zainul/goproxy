@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"goproxy/pkg/constants"
 	"goproxy/pkg/utils"
 )
 
@@ -152,7 +153,7 @@ func NewCircuitBreaker(config utils.CircuitBreakerConfig) *CircuitBreaker {
 		Timeout:          timeout,
 		CounterType:      CounterType(config.CounterType),
 	}
-	if config.CounterType == string(CounterSlidingWindow) {
+	if config.CounterType == constants.CounterTypeSlidingWindow {
 		cb.SlidingWindow = NewSlidingWindowCounter(time.Duration(config.WindowSize) * time.Second)
 	} else {
 		cb.RingBuffer = NewRingBufferCounter(config.WindowSize)

@@ -6,7 +6,15 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v2"
+	"goproxy/pkg/constants"
 )
+
+// RateLimiterConfig holds configuration for rate limiter
+type RateLimiterConfig struct {
+	Type   string  `json:"type" yaml:"type"`     // "sliding_window" or "token_bucket"
+	Limit  int     `json:"limit" yaml:"limit"`   // requests per window for sliding, tokens for bucket
+	Window int     `json:"window" yaml:"window"` // window in seconds for sliding, refill rate per second for bucket
+}
 
 // CircuitBreakerConfig holds configuration for a circuit breaker
 type CircuitBreakerConfig struct {
@@ -19,14 +27,23 @@ type CircuitBreakerConfig struct {
 
 // BackendConfig holds configuration for a backend service
 type BackendConfig struct {
-	URL             string               `json:"url" yaml:"url"`
-	CircuitBreaker  CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker"`
+	URL            string               `json:"url" yaml:"url"`
+	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker"`
+	RateLimiter    RateLimiterConfig    `json:"rate_limiter" yaml:"rate_limiter"`
+}
+
+// RedisConfig holds Redis configuration
+type RedisConfig struct {
+	Addr     string `json:"addr" yaml:"addr"`
+	Password string `json:"password" yaml:"password"`
+	DB       int    `json:"db" yaml:"db"`
 }
 
 // Config holds the overall configuration
 type Config struct {
 	ListenAddr         string           `json:"listen_addr" yaml:"listen_addr"`
 	EnableSingleflight bool             `json:"enable_singleflight" yaml:"enable_singleflight"`
+	Redis              RedisConfig      `json:"redis" yaml:"redis"`
 	Backends           []BackendConfig `json:"backends" yaml:"backends"`
 }
 
@@ -53,8 +70,11 @@ func LoadConfig(filename string) (*Config, error) {
 		if backend.URL == "" {
 			return nil, fmt.Errorf("backend %d: url is required", i)
 		}
-		if backend.CircuitBreaker.CounterType != "ringbuffer" && backend.CircuitBreaker.CounterType != "sliding_window" {
-			return nil, fmt.Errorf("backend %d: invalid counter_type, must be 'ringbuffer' or 'sliding_window'", i)
+		if backend.CircuitBreaker.CounterType != constants.CounterTypeRingBuffer && backend.CircuitBreaker.CounterType != constants.CounterTypeSlidingWindow {
+			return nil, fmt.Errorf("backend %d: invalid counter_type, must be '%s' or '%s'", i, constants.CounterTypeRingBuffer, constants.CounterTypeSlidingWindow)
+		}
+		if backend.RateLimiter.Type != "" && backend.RateLimiter.Type != constants.RateLimiterTypeSlidingWindow && backend.RateLimiter.Type != constants.RateLimiterTypeTokenBucket {
+			return nil, fmt.Errorf("backend %d: invalid rate_limiter type, must be '%s' or '%s'", i, constants.RateLimiterTypeSlidingWindow, constants.RateLimiterTypeTokenBucket)
 		}
 	}
 

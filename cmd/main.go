@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/redis/go-redis/v9"
+	"goproxy/internal/repository"
 	"goproxy/internal/usecase"
 	"goproxy/pkg/utils"
 )
@@ -16,13 +18,25 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Initialize Redis client
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     config.Redis.Addr,
+		Password: config.Redis.Password,
+		DB:       config.Redis.DB,
+	})
+
+	// Initialize repositories
+	rlRepo := repository.NewRedisRateLimiterRepository(rdb)
+
 	// Initialize usecases
 	cbManager := usecase.NewCircuitBreakerManager()
-	proxy := usecase.NewHTTPProxy(cbManager, config.EnableSingleflight)
+	rlManager := usecase.NewRateLimiterManager(rlRepo)
+	proxy := usecase.NewHTTPProxy(cbManager, rlManager, config.EnableSingleflight)
 
-	// Add circuit breakers for backends
+	// Add circuit breakers and rate limiters for backends
 	for _, backend := range config.Backends {
 		cbManager.AddBreaker(backend.URL, backend.CircuitBreaker)
+		rlManager.AddLimiter(backend.URL, backend.RateLimiter)
 	}
 
 	// HTTP handler

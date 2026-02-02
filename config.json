@@ -1,6 +1,11 @@
 {
   "listen_addr": ":8080",
   "enable_singleflight": true,
+  "redis": {
+    "addr": "localhost:6379",
+    "password": "",
+    "db": 0
+  },
   "backends": [
     {
       "url": "http://httpbin.org",
@@ -10,6 +15,11 @@
         "timeout": "10s",
         "counter_type": "ringbuffer",
         "window_size": 10
+      },
+      "rate_limiter": {
+        "type": "sliding_window",
+        "limit": 100,
+        "window": 60
       }
     }
   ]
