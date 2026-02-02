@@ -18,8 +18,12 @@ type RateLimiterConfig struct {
 	DamageLevel          float64 `json:"damage_level" yaml:"damage_level"`                 // damage level threshold (e.g., 0.5 for 50%)
 	CatastrophicLevel    float64 `json:"catastrophic_level" yaml:"catastrophic_level"`     // catastrophic level threshold (e.g., 0.8)
 	HealthyIncrement     float64 `json:"healthy_increment" yaml:"healthy_increment"`      // percentage increment when healthy (e.g., 0.01 for 1%)
-	UnhealthyDecrement   float64 `json:"unhealthy_decrement" yaml:"unhealthy_decrement"`  // percentage decrement when unhealthy (e.g., 0.01 for 1%)
-	Priority             int     `json:"priority" yaml:"priority"`                         // priority level (higher = more important)
+	UnhealthyDecrement        float64 `json:"unhealthy_decrement" yaml:"unhealthy_decrement"`                      // percentage decrement when unhealthy (e.g., 0.01 for 1%)
+	Priority                   int     `json:"priority" yaml:"priority"`                                                         // priority level (higher = more important)
+	HealthAdjustmentFactor     float64 `json:"health_adjustment_factor" yaml:"health_adjustment_factor"`                       // factor to reduce limit when unhealthy (default 0.5)
+	ReadinessAdjustmentFactor  float64 `json:"readiness_adjustment_factor" yaml:"readiness_adjustment_factor"`                 // factor to reduce limit when not ready (default 0.5)
+	SuccessRateThreshold       float64 `json:"success_rate_threshold" yaml:"success_rate_threshold"`                           // threshold below which to adjust (default 0.8)
+	SuccessRateAdjustmentFactor float64 `json:"success_rate_adjustment_factor" yaml:"success_rate_adjustment_factor"`         // factor based on success rate (default 0.5)
 }
 
 // CircuitBreakerConfig holds configuration for a circuit breaker
@@ -39,10 +43,13 @@ type EndpointConfig struct {
 
 // BackendConfig holds configuration for a backend service
 type BackendConfig struct {
-	URL            string               `json:"url" yaml:"url"`
-	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker"`
-	RateLimiter    RateLimiterConfig    `json:"rate_limiter" yaml:"rate_limiter"`
-	Endpoints      []EndpointConfig     `json:"endpoints" yaml:"endpoints"`
+	URL                 string               `json:"url" yaml:"url"`
+	CircuitBreaker      CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker"`
+	RateLimiter         RateLimiterConfig    `json:"rate_limiter" yaml:"rate_limiter"`
+	Endpoints           []EndpointConfig     `json:"endpoints" yaml:"endpoints"`
+	HealthCheckEndpoint string               `json:"health_check_endpoint" yaml:"health_check_endpoint"`
+	ReadinessEndpoint   string               `json:"readiness_endpoint" yaml:"readiness_endpoint"`
+	StatisticsEndpoint  string               `json:"statistics_endpoint" yaml:"statistics_endpoint"` // Optional
 }
 
 // RedisConfig holds Redis configuration

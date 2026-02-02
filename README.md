@@ -6,6 +6,7 @@ GoProxy is a resilient reverse proxy written in Go, designed to handle cascading
 
 - **Circuit Breaker**: Implements a finite state machine with CLOSED, OPEN, and HALF-OPEN states to manage backend health.
 - **Rate Limiting**: Protects backends with Sliding Window and Token Bucket algorithms using Redis, with dynamic adjustment based on health and endpoint priority.
+- **Health Checker**: Background worker monitors upstream healthiness, readiness, and success rates via configurable endpoints, influencing dynamic rate limits.
 - **Metrics**: Prometheus-compatible metrics exposed at `/metrics` endpoint, including traffic success/blocked, circuit breaker states, and rate limit hits, grouped by upstream and endpoint.
 - **Panic Recovery**: Comprehensive panic handling with stack trace logging to ensure service resilience.
 - **Graceful Shutdown**: Handles SIGINT/SIGTERM signals for clean termination, allowing ongoing requests to complete.
@@ -62,7 +63,11 @@ Create a `config.json` or `config.yaml` file in the root directory.
         "catastrophic_level": 0.8,
         "healthy_increment": 0.01,
         "unhealthy_decrement": 0.01,
-        "priority": 1
+        "priority": 1,
+        "health_adjustment_factor": 0.5,
+        "readiness_adjustment_factor": 0.5,
+        "success_rate_threshold": 0.8,
+        "success_rate_adjustment_factor": 0.5
       },
       "endpoints": [
         {
@@ -79,7 +84,10 @@ Create a `config.json` or `config.yaml` file in the root directory.
             "priority": 3
           }
         }
-      ]
+      ],
+      "health_check_endpoint": "/health",
+      "readiness_endpoint": "/ready",
+      "statistics_endpoint": "/stats"
     },
     {
       "url": "http://backend2:8080",
@@ -127,6 +135,10 @@ backends:
       healthy_increment: 0.01
       unhealthy_decrement: 0.01
       priority: 1
+      health_adjustment_factor: 0.5
+      readiness_adjustment_factor: 0.5
+      success_rate_threshold: 0.8
+      success_rate_adjustment_factor: 0.5
     endpoints:
       - path: "/api/high"
         rate_limiter:
@@ -139,6 +151,9 @@ backends:
           healthy_increment: 0.02
           unhealthy_decrement: 0.02
           priority: 3
+    health_check_endpoint: "/health"
+    readiness_endpoint: "/ready"
+    statistics_endpoint: "/stats"
   - url: "http://backend2:8080"
     circuit_breaker:
       failure_threshold: 0.5
@@ -166,7 +181,14 @@ backends:
     - `healthy_increment`: Percentage increment when healthy (e.g., 0.01).
     - `unhealthy_decrement`: Percentage decrement when unhealthy (e.g., 0.01).
     - `priority`: Priority level (higher = more lenient limits).
+- `health_adjustment_factor`: Factor to reduce limit when unhealthy (default 0.5).
+- `readiness_adjustment_factor`: Factor to reduce limit when not ready (default 0.5).
+- `success_rate_threshold`: Threshold below which to adjust (default 0.8).
+- `success_rate_adjustment_factor`: Factor based on success rate (default 0.5).
 - `endpoints`: List of endpoint-specific configurations with path and rate_limiter.
+- `health_check_endpoint`: Endpoint for health checks (e.g., "/health").
+- `readiness_endpoint`: Endpoint for readiness checks (e.g., "/ready").
+- `statistics_endpoint`: Optional endpoint for success rate statistics (e.g., "/stats").
   - `url`: Backend URL.
   - `circuit_breaker`:
     - `failure_threshold`: Threshold for failures (integer for ringbuffer, float for sliding window rate).

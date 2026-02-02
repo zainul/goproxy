@@ -37,15 +37,17 @@ type RateLimiterManager struct {
 	limiters         map[string]*utils.RateLimiterConfig
 	dynamicThresholds map[string]*DynamicThreshold
 	cbManager        CircuitBreakerUsecase
+	healthChecker    HealthCheckerUsecase
 }
 
 // NewRateLimiterManager creates a new RateLimiterManager
-func NewRateLimiterManager(repo repository.RateLimiterRepository, cbManager CircuitBreakerUsecase) *RateLimiterManager {
+func NewRateLimiterManager(repo repository.RateLimiterRepository, cbManager CircuitBreakerUsecase, healthChecker HealthCheckerUsecase) *RateLimiterManager {
 	return &RateLimiterManager{
 		repo:              repo,
 		limiters:          make(map[string]*utils.RateLimiterConfig),
 		dynamicThresholds: make(map[string]*DynamicThreshold),
 		cbManager:         cbManager,
+		healthChecker:     healthChecker,
 	}
 }
 
@@ -144,26 +146,49 @@ func (m *RateLimiterManager) adjustDynamicLimit(backendURL string, config *utils
 	}
 
 	isHealthy := m.cbManager.GetState(backendURL) == entity.StateClosed
+	healthStatus := m.healthChecker.GetHealthStatus(backendURL)
 
 	now := time.Now()
 	dynamic.mu.Lock()
+	defer dynamic.mu.Unlock()
 	if now.Sub(dynamic.LastAdjustment) > time.Minute { // Adjust every minute
-		if isHealthy {
+		adjustmentFactor := 1.0
+
+		// Adjust based on health status
+		if !healthStatus.IsHealthy {
+			adjustmentFactor *= config.HealthAdjustmentFactor
+		}
+		if !healthStatus.IsReady {
+			adjustmentFactor *= config.ReadinessAdjustmentFactor
+		}
+
+		// Adjust based on success rate from statistics
+		if healthStatus.SuccessRate < config.SuccessRateThreshold {
+			adjustmentFactor *= config.SuccessRateAdjustmentFactor
+		}
+
+		if isHealthy && healthStatus.IsHealthy && healthStatus.IsReady && healthStatus.SuccessRate >= config.SuccessRateThreshold {
 			// Increase limit
-			increment := int(float64(dynamic.BaseLimit) * config.HealthyIncrement)
+			increment := int(float64(dynamic.BaseLimit) * config.HealthyIncrement * adjustmentFactor)
 			current := int(atomic.LoadInt64(&dynamic.CurrentLimit))
 			newLimit := int(math.Min(float64(current+increment), float64(dynamic.BaseLimit*2)))
 			atomic.StoreInt64(&dynamic.CurrentLimit, int64(newLimit))
 			atomic.AddInt64(&dynamic.HealthyCount, 1)
 		} else {
-			// Decrease limit based on damage/catastrophic levels
+			// Decrease limit based on damage/catastrophic levels and health factors
 			state := m.cbManager.GetState(backendURL)
 			var decrement float64
 			if state == entity.StateOpen {
 				decrement = config.UnhealthyDecrement
 			} else if state == entity.StateHalfOpen {
-				decrement = config.UnhealthyDecrement * 0.5 // Less aggressive
+				decrement = config.UnhealthyDecrement * 0.5
+			} else {
+				decrement = config.UnhealthyDecrement * 0.2 // Mild decrease for other cases
 			}
+
+			// Apply health-based adjustments
+			decrement *= adjustmentFactor
+
 			decrementAmount := int(float64(dynamic.BaseLimit) * decrement)
 			current := int(atomic.LoadInt64(&dynamic.CurrentLimit))
 			newLimit := int(math.Max(float64(current-decrementAmount), float64(dynamic.BaseLimit/10)))
@@ -172,10 +197,9 @@ func (m *RateLimiterManager) adjustDynamicLimit(backendURL string, config *utils
 		}
 		dynamic.LastAdjustment = now
 	}
-	dynamic.mu.Unlock()
 
 	// Apply priority multiplier (higher priority = higher limit)
 	current := atomic.LoadInt64(&dynamic.CurrentLimit)
-	priorityMultiplier := 1.0 + float64(config.Priority)*0.1 // 10% per priority level
+	priorityMultiplier := 1.0 + float64(config.Priority)*0.1
 	return int(float64(current) * priorityMultiplier)
 }

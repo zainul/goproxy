@@ -27,13 +27,34 @@ func (m *MockRateLimiterRepository) AllowTokenBucket(ctx context.Context, key st
 	return args.Bool(0), args.Error(1)
 }
 
+
+
+// MockHealthCheckerUsecase is a mock implementation
+type MockHealthCheckerUsecase struct {
+	mock.Mock
+}
+
+func (m *MockHealthCheckerUsecase) Start(ctx context.Context, backends []utils.BackendConfig) {
+	m.Called(ctx, backends)
+}
+
+func (m *MockHealthCheckerUsecase) GetHealthStatus(backendURL string) *HealthStatus {
+	args := m.Called(backendURL)
+	if args.Get(0) == nil {
+		return &HealthStatus{IsHealthy: true, IsReady: true, SuccessRate: 1.0}
+	}
+	return args.Get(0).(*HealthStatus)
+}
+
 func TestRateLimiterManager_Allow_SlidingWindow(t *testing.T) {
 	t.Logf("Scenario: Rate Limiter Allow with Sliding Window")
 	t.Logf("Input: backend='http://backend', config={Type: 'sliding_window', Limit: 100, Window: 60}")
 
 	mockRepo := &MockRateLimiterRepository{}
 	mockCB := &MockCircuitBreakerUsecase{}
-	manager := NewRateLimiterManager(mockRepo, mockCB)
+	mockHC := &MockHealthCheckerUsecase{}
+	mockHC.On("GetHealthStatus", mock.Anything).Return(&HealthStatus{IsHealthy: true, IsReady: true, SuccessRate: 1.0}).Maybe()
+	manager := NewRateLimiterManager(mockRepo, mockCB, mockHC)
 
 	config := utils.RateLimiterConfig{
 		Type:   constants.RateLimiterTypeSlidingWindow,
@@ -64,7 +85,9 @@ func TestRateLimiterManager_Allow_TokenBucket(t *testing.T) {
 
 	mockRepo := &MockRateLimiterRepository{}
 	mockCB := &MockCircuitBreakerUsecase{}
-	manager := NewRateLimiterManager(mockRepo, mockCB)
+	mockHC := &MockHealthCheckerUsecase{}
+	mockHC.On("GetHealthStatus", mock.Anything).Return(&HealthStatus{IsHealthy: true, IsReady: true, SuccessRate: 1.0}).Maybe()
+	manager := NewRateLimiterManager(mockRepo, mockCB, mockHC)
 
 	config := utils.RateLimiterConfig{
 		Type:   constants.RateLimiterTypeTokenBucket,
@@ -95,7 +118,9 @@ func TestRateLimiterManager_Allow_NoLimiter(t *testing.T) {
 
 	mockRepo := &MockRateLimiterRepository{}
 	mockCB := &MockCircuitBreakerUsecase{}
-	manager := NewRateLimiterManager(mockRepo, mockCB)
+	mockHC := &MockHealthCheckerUsecase{}
+	mockHC.On("GetHealthStatus", mock.Anything).Return(&HealthStatus{IsHealthy: true, IsReady: true, SuccessRate: 1.0}).Maybe()
+	manager := NewRateLimiterManager(mockRepo, mockCB, mockHC)
 
 	ctx := context.Background()
 	t.Logf("Action: Allow(ctx, 'http://backend')")
@@ -115,7 +140,9 @@ func BenchmarkRateLimiterManager_Allow(b *testing.B) {
 
 	mockRepo := &MockRateLimiterRepository{}
 	mockCB := &MockCircuitBreakerUsecase{}
-	manager := NewRateLimiterManager(mockRepo, mockCB)
+	mockHC := &MockHealthCheckerUsecase{}
+	mockHC.On("GetHealthStatus", mock.Anything).Return(&HealthStatus{IsHealthy: true, IsReady: true, SuccessRate: 1.0}).Maybe()
+	manager := NewRateLimiterManager(mockRepo, mockCB, mockHC)
 
 	config := utils.RateLimiterConfig{
 		Type:   constants.RateLimiterTypeSlidingWindow,
@@ -145,7 +172,9 @@ func TestRateLimiterManager_Allow_Dynamic_Healthy(t *testing.T) {
 
 	mockRepo := &MockRateLimiterRepository{}
 	mockCB := &MockCircuitBreakerUsecase{}
-	manager := NewRateLimiterManager(mockRepo, mockCB)
+	mockHC := &MockHealthCheckerUsecase{}
+	mockHC.On("GetHealthStatus", mock.Anything).Return(&HealthStatus{IsHealthy: true, IsReady: true, SuccessRate: 1.0}).Maybe()
+	manager := NewRateLimiterManager(mockRepo, mockCB, mockHC)
 
 	config := utils.RateLimiterConfig{
 		Type:               constants.RateLimiterTypeSlidingWindow,
@@ -158,6 +187,7 @@ func TestRateLimiterManager_Allow_Dynamic_Healthy(t *testing.T) {
 	manager.AddLimiter("http://backend", config)
 
 	mockCB.On("GetState", "http://backend").Return(entity.StateClosed) // Healthy
+	mockHC.On("GetHealthStatus", "http://backend").Return(&HealthStatus{IsHealthy: true, IsReady: true, SuccessRate: 1.0})
 
 	ctx := context.Background()
 	// Expect adjusted limit: 100 + 1 (increment) = 101, then * 1.1 (priority) = 111
@@ -183,7 +213,9 @@ func TestRateLimiterManager_Allow_Dynamic_Unhealthy(t *testing.T) {
 
 	mockRepo := &MockRateLimiterRepository{}
 	mockCB := &MockCircuitBreakerUsecase{}
-	manager := NewRateLimiterManager(mockRepo, mockCB)
+	mockHC := &MockHealthCheckerUsecase{}
+	mockHC.On("GetHealthStatus", mock.Anything).Return(&HealthStatus{IsHealthy: true, IsReady: true, SuccessRate: 1.0}).Maybe()
+	manager := NewRateLimiterManager(mockRepo, mockCB, mockHC)
 
 	config := utils.RateLimiterConfig{
 		Type:                 constants.RateLimiterTypeSlidingWindow,
@@ -196,6 +228,7 @@ func TestRateLimiterManager_Allow_Dynamic_Unhealthy(t *testing.T) {
 	manager.AddLimiter("http://backend", config)
 
 	mockCB.On("GetState", "http://backend").Return(entity.StateOpen) // Unhealthy
+	mockHC.On("GetHealthStatus", "http://backend").Return(&HealthStatus{IsHealthy: false, IsReady: false, SuccessRate: 0.5})
 
 	ctx := context.Background()
 	// Expect adjusted limit: 100 * 0.99 (decrement) * 1.1 (priority) ≈ 108

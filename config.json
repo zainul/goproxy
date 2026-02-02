@@ -25,7 +25,11 @@
         "catastrophic_level": 0.8,
         "healthy_increment": 0.01,
         "unhealthy_decrement": 0.01,
-        "priority": 1
+        "priority": 1,
+        "health_adjustment_factor": 0.5,
+        "readiness_adjustment_factor": 0.5,
+        "success_rate_threshold": 0.8,
+        "success_rate_adjustment_factor": 0.5
       },
       "endpoints": [
         {
@@ -39,10 +43,17 @@
             "catastrophic_level": 0.7,
             "healthy_increment": 0.02,
             "unhealthy_decrement": 0.02,
-            "priority": 3
+            "priority": 3,
+            "health_adjustment_factor": 0.3,
+            "readiness_adjustment_factor": 0.3,
+            "success_rate_threshold": 0.9,
+            "success_rate_adjustment_factor": 0.3
           }
         }
-      ]
+      ],
+      "health_check_endpoint": "/health",
+      "readiness_endpoint": "/ready",
+      "statistics_endpoint": "/stats"
     }
   ]
 }

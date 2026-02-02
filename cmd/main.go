@@ -40,9 +40,12 @@ func main() {
 	// Initialize repositories
 	rlRepo := repository.NewRedisRateLimiterRepository(rdb)
 
+	// Initialize health checker
+	healthChecker := usecase.NewHealthChecker(30 * time.Second) // Check every 30 seconds
+
 	// Initialize usecases
 	cbManager := usecase.NewCircuitBreakerManager()
-	rlManager := usecase.NewRateLimiterManager(rlRepo, cbManager)
+	rlManager := usecase.NewRateLimiterManager(rlRepo, cbManager, healthChecker)
 	proxy := usecase.NewHTTPProxy(cbManager, rlManager, config.EnableSingleflight)
 
 	// Add circuit breakers and rate limiters for backends
@@ -53,6 +56,11 @@ func main() {
 			rlManager.AddEndpointLimiter(backend.URL, endpoint.Path, endpoint.RateLimiter)
 		}
 	}
+
+	// Start health checker worker
+	hctx, hcancel := context.WithCancel(context.Background())
+	defer hcancel()
+	go healthChecker.Start(hctx, config.Backends)
 
 	// HTTP handlers with panic recovery
 	http.Handle("/metrics", middleware.PanicRecovery(promhttp.Handler()))

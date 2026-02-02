@@ -39,7 +39,11 @@ func TestLoadConfig_JSON(t *testing.T) {
 					"catastrophic_level": 0.8,
 					"healthy_increment": 0.01,
 					"unhealthy_decrement": 0.01,
-					"priority": 1
+					"priority": 1,
+					"health_adjustment_factor": 0.5,
+					"readiness_adjustment_factor": 0.5,
+					"success_rate_threshold": 0.8,
+					"success_rate_adjustment_factor": 0.5
 				},
 				"endpoints": [
 					{
@@ -130,6 +134,10 @@ backends:
       healthy_increment: 0.02
       unhealthy_decrement: 0.02
       priority: 2
+      health_adjustment_factor: 0.3
+      readiness_adjustment_factor: 0.3
+      success_rate_threshold: 0.9
+      success_rate_adjustment_factor: 0.3
 `
 	tmpFile, err := os.CreateTemp("", "config")
 	assert.NoError(t, err)
