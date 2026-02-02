@@ -2,7 +2,12 @@ package usecase
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"math"
+	"runtime/debug"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"goproxy/internal/entity"
@@ -18,11 +23,12 @@ type RateLimiterUsecase interface {
 
 // DynamicThreshold holds dynamic rate limit data
 type DynamicThreshold struct {
-	CurrentLimit    int
-	BaseLimit       int
-	LastAdjustment  time.Time
-	HealthyCount    int
-	UnhealthyCount  int
+	mu             sync.RWMutex
+	CurrentLimit   int64
+	BaseLimit      int
+	LastAdjustment time.Time
+	HealthyCount   int64
+	UnhealthyCount int64
 }
 
 // RateLimiterManager implements RateLimiterUsecase
@@ -48,7 +54,7 @@ func (m *RateLimiterManager) AddLimiter(backendURL string, config utils.RateLimi
 	m.limiters[backendURL] = &config
 	if config.Dynamic {
 		m.dynamicThresholds[backendURL] = &DynamicThreshold{
-			CurrentLimit: config.Limit,
+			CurrentLimit: int64(config.Limit),
 			BaseLimit:    config.Limit,
 		}
 	}
@@ -60,14 +66,20 @@ func (m *RateLimiterManager) AddEndpointLimiter(backendURL, path string, config 
 	m.limiters[key] = &config
 	if config.Dynamic {
 		m.dynamicThresholds[key] = &DynamicThreshold{
-			CurrentLimit: config.Limit,
+			CurrentLimit: int64(config.Limit),
 			BaseLimit:    config.Limit,
 		}
 	}
 }
 
 // Allow checks if the request is allowed
-func (m *RateLimiterManager) Allow(ctx context.Context, backendURL string) (bool, error) {
+func (m *RateLimiterManager) Allow(ctx context.Context, backendURL string) (allowed bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Panic in RateLimiterManager.Allow: %v\nStack trace:\n%s", r, debug.Stack())
+			err = fmt.Errorf("internal panic: %v", r)
+		}
+	}()
 	config, exists := m.limiters[backendURL]
 	if !exists {
 		return true, nil // No limiter, allow
@@ -92,7 +104,13 @@ func (m *RateLimiterManager) Allow(ctx context.Context, backendURL string) (bool
 }
 
 // AllowEndpoint checks if the request is allowed for a specific endpoint
-func (m *RateLimiterManager) AllowEndpoint(ctx context.Context, backendURL, path string) (bool, error) {
+func (m *RateLimiterManager) AllowEndpoint(ctx context.Context, backendURL, path string) (allowed bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Panic in RateLimiterManager.AllowEndpoint: %v\nStack trace:\n%s", r, debug.Stack())
+			err = fmt.Errorf("internal panic: %v", r)
+		}
+	}()
 	key := backendURL + path
 	config, exists := m.limiters[key]
 	if !exists {
@@ -128,12 +146,15 @@ func (m *RateLimiterManager) adjustDynamicLimit(backendURL string, config *utils
 	isHealthy := m.cbManager.GetState(backendURL) == entity.StateClosed
 
 	now := time.Now()
+	dynamic.mu.Lock()
 	if now.Sub(dynamic.LastAdjustment) > time.Minute { // Adjust every minute
 		if isHealthy {
 			// Increase limit
 			increment := int(float64(dynamic.BaseLimit) * config.HealthyIncrement)
-			dynamic.CurrentLimit = int(math.Min(float64(dynamic.CurrentLimit+increment), float64(dynamic.BaseLimit*2))) // Cap at 200%
-			dynamic.HealthyCount++
+			current := int(atomic.LoadInt64(&dynamic.CurrentLimit))
+			newLimit := int(math.Min(float64(current+increment), float64(dynamic.BaseLimit*2)))
+			atomic.StoreInt64(&dynamic.CurrentLimit, int64(newLimit))
+			atomic.AddInt64(&dynamic.HealthyCount, 1)
 		} else {
 			// Decrease limit based on damage/catastrophic levels
 			state := m.cbManager.GetState(backendURL)
@@ -144,13 +165,17 @@ func (m *RateLimiterManager) adjustDynamicLimit(backendURL string, config *utils
 				decrement = config.UnhealthyDecrement * 0.5 // Less aggressive
 			}
 			decrementAmount := int(float64(dynamic.BaseLimit) * decrement)
-			dynamic.CurrentLimit = int(math.Max(float64(dynamic.CurrentLimit-decrementAmount), float64(dynamic.BaseLimit/10))) // Floor at 10%
-			dynamic.UnhealthyCount++
+			current := int(atomic.LoadInt64(&dynamic.CurrentLimit))
+			newLimit := int(math.Max(float64(current-decrementAmount), float64(dynamic.BaseLimit/10)))
+			atomic.StoreInt64(&dynamic.CurrentLimit, int64(newLimit))
+			atomic.AddInt64(&dynamic.UnhealthyCount, 1)
 		}
 		dynamic.LastAdjustment = now
 	}
+	dynamic.mu.Unlock()
 
 	// Apply priority multiplier (higher priority = higher limit)
+	current := atomic.LoadInt64(&dynamic.CurrentLimit)
 	priorityMultiplier := 1.0 + float64(config.Priority)*0.1 // 10% per priority level
-	return int(float64(dynamic.CurrentLimit) * priorityMultiplier)
+	return int(float64(current) * priorityMultiplier)
 }

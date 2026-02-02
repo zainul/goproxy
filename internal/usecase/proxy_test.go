@@ -70,7 +70,7 @@ func TestHTTPProxy_ForwardRequest_Healthy(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	t.Logf("Action: ForwardRequest with req=%+v, backendURL=%s", req, backend.URL)
-	err := proxy.ForwardRequest(w, req, backend.URL)
+	err := proxy.ForwardRequest(w, req, backend.URL, "/test")
 	t.Logf("Output: err=%v, statusCode=%d, body=%s", err, w.Code, w.Body.String())
 
 	assert.NoError(t, err)
@@ -109,7 +109,7 @@ func TestHTTPProxy_ForwardRequest_Unhealthy(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	t.Logf("Action: ForwardRequest with req=%+v, backendURL=%s", req, backend.URL)
-	err := proxy.ForwardRequest(w, req, backend.URL)
+	err := proxy.ForwardRequest(w, req, backend.URL, "/test")
 	t.Logf("Output: err=%v, statusCode=%d", err, w.Code)
 
 	assert.NoError(t, err) // No error, but 500
@@ -138,7 +138,7 @@ func TestHTTPProxy_ForwardRequest_CircuitOpen(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	t.Logf("Action: ForwardRequest with req=%+v, backendURL='http://backend'", req)
-	err := proxy.ForwardRequest(w, req, "http://backend")
+	err := proxy.ForwardRequest(w, req, "http://backend", "/test")
 	t.Logf("Output: err=%v, statusCode=%d", err, w.Code)
 
 	assert.Error(t, err)
@@ -166,7 +166,7 @@ func TestHTTPProxy_ForwardRequest_RateLimitExceeded(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	t.Logf("Action: ForwardRequest with req=%+v, backendURL='http://backend'", req)
-	err := proxy.ForwardRequest(w, req, "http://backend")
+	err := proxy.ForwardRequest(w, req, "http://backend", "/test")
 	t.Logf("Output: err=%v, statusCode=%d", err, w.Code)
 
 	assert.Error(t, err)
@@ -220,7 +220,7 @@ func TestHTTPProxy_HighTraffic_HalfOpen(t *testing.T) {
 			defer wg.Done()
 			req := httptest.NewRequest("GET", "http://proxy/test", nil)
 			w := httptest.NewRecorder()
-			err := proxy.ForwardRequest(w, req, backend.URL)
+			err := proxy.ForwardRequest(w, req, backend.URL, "/test")
 			if err != nil {
 				results <- http.StatusServiceUnavailable
 			} else {
@@ -278,7 +278,7 @@ func BenchmarkHTTPProxy_ForwardRequest(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			w := httptest.NewRecorder()
-			err := proxy.ForwardRequest(w, req, backend.URL)
+			err := proxy.ForwardRequest(w, req, backend.URL, "/test")
 			if err != nil {
 				b.Errorf("Unexpected error: %v", err)
 			}

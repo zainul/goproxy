@@ -1,11 +1,14 @@
 package usecase
 
 import (
+	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
 	"goproxy/internal/entity"
 	"goproxy/pkg/constants"
+	"goproxy/pkg/metrics"
 	"goproxy/pkg/utils"
 )
 
@@ -35,10 +38,17 @@ func (m *CircuitBreakerManager) AddBreaker(backendURL string, config utils.Circu
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.breakers[backendURL] = entity.NewCircuitBreaker(config)
+	metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateClosed))
 }
 
 // CanExecute checks if the request can be executed
-func (m *CircuitBreakerManager) CanExecute(backendURL string) bool {
+func (m *CircuitBreakerManager) CanExecute(backendURL string) (canExecute bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Panic in CircuitBreakerManager.CanExecute: %v\nStack trace:\n%s", r, debug.Stack())
+			canExecute = true // Allow on panic
+		}
+	}()
 	m.mu.RLock()
 	breaker, exists := m.breakers[backendURL]
 	m.mu.RUnlock()
@@ -54,6 +64,7 @@ func (m *CircuitBreakerManager) CanExecute(backendURL string) bool {
 			// Transition to half-open
 			m.mu.Lock()
 			breaker.State = entity.StateHalfOpen
+			metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateHalfOpen))
 			m.mu.Unlock()
 			return true
 		}
@@ -67,6 +78,11 @@ func (m *CircuitBreakerManager) CanExecute(backendURL string) bool {
 
 // RecordSuccess records a successful call
 func (m *CircuitBreakerManager) RecordSuccess(backendURL string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Panic in CircuitBreakerManager.RecordSuccess: %v\nStack trace:\n%s", r, debug.Stack())
+		}
+	}()
 	m.mu.RLock()
 	breaker, exists := m.breakers[backendURL]
 	m.mu.RUnlock()
@@ -87,6 +103,7 @@ func (m *CircuitBreakerManager) RecordSuccess(backendURL string) {
 		if m.checkSuccessThreshold(breaker) {
 			m.mu.Lock()
 			breaker.State = entity.StateClosed
+			metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateClosed))
 			m.mu.Unlock()
 		}
 	}
@@ -94,6 +111,11 @@ func (m *CircuitBreakerManager) RecordSuccess(backendURL string) {
 
 // RecordFailure records a failed call
 func (m *CircuitBreakerManager) RecordFailure(backendURL string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Panic in CircuitBreakerManager.RecordFailure: %v\nStack trace:\n%s", r, debug.Stack())
+		}
+	}()
 	m.mu.RLock()
 	breaker, exists := m.breakers[backendURL]
 	m.mu.RUnlock()
@@ -114,17 +136,25 @@ func (m *CircuitBreakerManager) RecordFailure(backendURL string) {
 		if m.checkFailureThreshold(breaker) {
 			m.mu.Lock()
 			breaker.State = entity.StateOpen
+			metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateOpen))
 			m.mu.Unlock()
 		}
 	case entity.StateHalfOpen:
 		m.mu.Lock()
 		breaker.State = entity.StateOpen
+		metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateOpen))
 		m.mu.Unlock()
 	}
 }
 
 // GetState returns the current state
-func (m *CircuitBreakerManager) GetState(backendURL string) entity.State {
+func (m *CircuitBreakerManager) GetState(backendURL string) (state entity.State) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Panic in CircuitBreakerManager.GetState: %v\nStack trace:\n%s", r, debug.Stack())
+			state = entity.StateClosed // Default to closed
+		}
+	}()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if breaker, exists := m.breakers[backendURL]; exists {
