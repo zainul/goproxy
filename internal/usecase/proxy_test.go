@@ -6,11 +6,13 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
+
+	"goproxy/internal/entity"
+	"goproxy/pkg/constants"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"goproxy/internal/entity"
-	"goproxy/pkg/constants"
 )
 
 // MockCircuitBreakerUsecase is a mock implementation
@@ -46,6 +48,11 @@ func (m *MockRateLimiterUsecase) Allow(ctx context.Context, backendURL string) (
 	return args.Bool(0), args.Error(1)
 }
 
+func (m *MockRateLimiterUsecase) AllowEndpoint(ctx context.Context, backendURL, path string) (bool, error) {
+	args := m.Called(ctx, backendURL, path)
+	return args.Bool(0), args.Error(1)
+}
+
 func TestHTTPProxy_ForwardRequest_Healthy(t *testing.T) {
 	t.Logf("Scenario: %s", constants.TestScenarioNormalProxy)
 	t.Logf("Input: GET request to healthy backend, circuit breaker allows, rate limiter allows")
@@ -63,14 +70,18 @@ func TestHTTPProxy_ForwardRequest_Healthy(t *testing.T) {
 
 	mockRL := &MockRateLimiterUsecase{}
 	mockRL.On("Allow", mock.Anything, backend.URL).Return(true, nil)
+	mockRL.On("AllowEndpoint", mock.Anything, backend.URL, "/test").Return(true, nil)
 
-	proxy := NewHTTPProxy(mockCB, mockRL, true)
+	lb := entity.NewLoadBalancer([]*entity.Backend{
+		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
+	})
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 	w := httptest.NewRecorder()
 
-	t.Logf("Action: ForwardRequest with req=%+v, backendURL=%s", req, backend.URL)
-	err := proxy.ForwardRequest(w, req, backend.URL, "/test")
+	t.Logf("Action: ForwardRequest with req=%+v", req)
+	err := proxy.ForwardRequest(w, req, "/test")
 	t.Logf("Output: err=%v, statusCode=%d, body=%s", err, w.Code, w.Body.String())
 
 	assert.NoError(t, err)
@@ -102,14 +113,18 @@ func TestHTTPProxy_ForwardRequest_Unhealthy(t *testing.T) {
 
 	mockRL := &MockRateLimiterUsecase{}
 	mockRL.On("Allow", mock.Anything, backend.URL).Return(true, nil)
+	mockRL.On("AllowEndpoint", mock.Anything, backend.URL, "/test").Return(true, nil)
 
-	proxy := NewHTTPProxy(mockCB, mockRL, true)
+	lb := entity.NewLoadBalancer([]*entity.Backend{
+		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
+	})
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 	w := httptest.NewRecorder()
 
-	t.Logf("Action: ForwardRequest with req=%+v, backendURL=%s", req, backend.URL)
-	err := proxy.ForwardRequest(w, req, backend.URL, "/test")
+	t.Logf("Action: ForwardRequest with req=%+v", req)
+	err := proxy.ForwardRequest(w, req, "/test")
 	t.Logf("Output: err=%v, statusCode=%d", err, w.Code)
 
 	assert.NoError(t, err) // No error, but 500
@@ -131,14 +146,18 @@ func TestHTTPProxy_ForwardRequest_CircuitOpen(t *testing.T) {
 
 	mockRL := &MockRateLimiterUsecase{}
 	mockRL.On("Allow", mock.Anything, "http://backend").Return(true, nil)
+	mockRL.On("AllowEndpoint", mock.Anything, "http://backend", "/test").Return(true, nil)
 
-	proxy := NewHTTPProxy(mockCB, mockRL, true)
+	lb := entity.NewLoadBalancer([]*entity.Backend{
+		{URL: "http://backend", IsHealthy: true, IsReady: true, SuccessRate: 1.0},
+	})
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 	w := httptest.NewRecorder()
 
-	t.Logf("Action: ForwardRequest with req=%+v, backendURL='http://backend'", req)
-	err := proxy.ForwardRequest(w, req, "http://backend", "/test")
+	t.Logf("Action: ForwardRequest with req=%+v", req)
+	err := proxy.ForwardRequest(w, req, "/test")
 	t.Logf("Output: err=%v, statusCode=%d", err, w.Code)
 
 	assert.Error(t, err)
@@ -160,13 +179,16 @@ func TestHTTPProxy_ForwardRequest_RateLimitExceeded(t *testing.T) {
 
 	mockRL.On("Allow", mock.Anything, "http://backend").Return(false, nil)
 
-	proxy := NewHTTPProxy(mockCB, mockRL, true)
+	lb := entity.NewLoadBalancer([]*entity.Backend{
+		{URL: "http://backend", IsHealthy: true, IsReady: true, SuccessRate: 1.0},
+	})
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 	w := httptest.NewRecorder()
 
-	t.Logf("Action: ForwardRequest with req=%+v, backendURL='http://backend'", req)
-	err := proxy.ForwardRequest(w, req, "http://backend", "/test")
+	t.Logf("Action: ForwardRequest with req=%+v", req)
+	err := proxy.ForwardRequest(w, req, "/test")
 	t.Logf("Output: err=%v, statusCode=%d", err, w.Code)
 
 	assert.Error(t, err)
@@ -206,8 +228,12 @@ func TestHTTPProxy_HighTraffic_HalfOpen(t *testing.T) {
 
 	mockRL := &MockRateLimiterUsecase{}
 	mockRL.On("Allow", mock.Anything, backend.URL).Return(true, nil)
+	mockRL.On("AllowEndpoint", mock.Anything, backend.URL, "/test").Return(true, nil)
 
-	proxy := NewHTTPProxy(mockCB, mockRL, true)
+	lb := entity.NewLoadBalancer([]*entity.Backend{
+		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
+	})
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
 
 	// Simulate 5000 requests concurrently
 	numRequests := 5000
@@ -220,7 +246,7 @@ func TestHTTPProxy_HighTraffic_HalfOpen(t *testing.T) {
 			defer wg.Done()
 			req := httptest.NewRequest("GET", "http://proxy/test", nil)
 			w := httptest.NewRecorder()
-			err := proxy.ForwardRequest(w, req, backend.URL, "/test")
+			err := proxy.ForwardRequest(w, req, "/test")
 			if err != nil {
 				results <- http.StatusServiceUnavailable
 			} else {
@@ -269,8 +295,12 @@ func BenchmarkHTTPProxy_ForwardRequest(b *testing.B) {
 
 	mockRL := &MockRateLimiterUsecase{}
 	mockRL.On("Allow", mock.Anything, backend.URL).Return(true, nil).Maybe()
+	mockRL.On("AllowEndpoint", mock.Anything, backend.URL, "/test").Return(true, nil).Maybe()
 
-	proxy := NewHTTPProxy(mockCB, mockRL, true)
+	lb := entity.NewLoadBalancer([]*entity.Backend{
+		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
+	})
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 
@@ -278,7 +308,7 @@ func BenchmarkHTTPProxy_ForwardRequest(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			w := httptest.NewRecorder()
-			err := proxy.ForwardRequest(w, req, backend.URL, "/test")
+			err := proxy.ForwardRequest(w, req, "/test")
 			if err != nil {
 				b.Errorf("Unexpected error: %v", err)
 			}

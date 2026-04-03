@@ -19,6 +19,7 @@ import (
 // RateLimiterUsecase defines the interface for rate limiting
 type RateLimiterUsecase interface {
 	Allow(ctx context.Context, backendURL string) (bool, error)
+	AllowEndpoint(ctx context.Context, backendURL, path string) (bool, error)
 }
 
 // DynamicThreshold holds dynamic rate limit data

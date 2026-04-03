@@ -10,14 +10,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
+	"goproxy/internal/entity"
 	"goproxy/internal/repository"
 	"goproxy/internal/usecase"
 	"goproxy/pkg/metrics"
 	"goproxy/pkg/middleware"
 	"goproxy/pkg/utils"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -46,7 +48,20 @@ func main() {
 	// Initialize usecases
 	cbManager := usecase.NewCircuitBreakerManager()
 	rlManager := usecase.NewRateLimiterManager(rlRepo, cbManager, healthChecker)
-	proxy := usecase.NewHTTPProxy(cbManager, rlManager, config.EnableSingleflight)
+
+	// Initialize load balancer with all backends
+	var backends []*entity.Backend
+	for _, backendConfig := range config.Backends {
+		backends = append(backends, &entity.Backend{
+			URL:         backendConfig.URL,
+			IsHealthy:   true,
+			IsReady:     true,
+			SuccessRate: 1.0,
+		})
+	}
+	lb := entity.NewLoadBalancer(backends)
+
+	proxy := usecase.NewHTTPProxy(cbManager, rlManager, lb, config.EnableSingleflight, 30*time.Second)
 
 	// Add circuit breakers and rate limiters for backends
 	for _, backend := range config.Backends {
@@ -66,14 +81,12 @@ func main() {
 	http.Handle("/metrics", middleware.PanicRecovery(promhttp.Handler()))
 
 	http.Handle("/", middleware.PanicRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simple round-robin or select backend, for now use first
 		if len(config.Backends) == 0 {
 			http.Error(w, "No backends configured", http.StatusInternalServerError)
 			return
 		}
-		backend := config.Backends[0] // TODO: implement load balancing
-		endpoint := r.URL.Path // Use path as endpoint identifier
-		if err := proxy.ForwardRequest(w, r, backend.URL, endpoint); err != nil {
+		endpoint := r.URL.Path
+		if err := proxy.ForwardRequest(w, r, endpoint); err != nil {
 			log.Printf("Proxy error: %v", err)
 		}
 	})))
