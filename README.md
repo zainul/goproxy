@@ -6,7 +6,13 @@ GoProxy is a resilient reverse proxy written in Go, designed to handle cascading
 
 - **Circuit Breaker**: Implements a finite state machine with CLOSED, OPEN, and HALF-OPEN states to manage backend health.
 - **Rate Limiting**: Protects backends with Sliding Window and Token Bucket algorithms using Redis, with dynamic adjustment based on health and endpoint priority.
-- **Health Checker**: Background worker monitors upstream healthiness, readiness, and success rates via configurable endpoints, influencing dynamic rate limits.
+- **Health Checking**: Automatic backend health monitoring with configurable intervals
+  - Health endpoint monitoring (`/health`)
+  - Readiness endpoint checking (`/ready`)
+  - Success rate tracking via statistics endpoint
+  - Dynamic status updates (Healthy/Unhealthy, Ready/NotReady)
+- **Load Balancing**: Round-robin backend selection with health-aware routing.
+- **Header Sanitization**: Filters request headers using allowlist/blocklist to prevent header injection.
 - **Metrics**: Prometheus-compatible metrics exposed at `/metrics` endpoint, including traffic success/blocked, circuit breaker states, and rate limit hits, grouped by upstream and endpoint.
 - **Panic Recovery**: Comprehensive panic handling with stack trace logging to ensure service resilience.
 - **Graceful Shutdown**: Handles SIGINT/SIGTERM signals for clean termination, allowing ongoing requests to complete.
@@ -19,15 +25,53 @@ GoProxy is a resilient reverse proxy written in Go, designed to handle cascading
 
 ## Architecture
 
-The project follows clean architecture principles:
+```
+┌─────────────┐
+│   Client    │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────────────────────────┐
+│           GoProxy Server            │
+│  ┌───────────────────────────────┐  │
+│  │     Panic Recovery Middleware │  │
+│  └───────────────┬───────────────┘  │
+│                  │                  │
+│  ┌───────────────▼───────────────┐  │
+│  │      Rate Limiter Check       │  │
+│  └───────────────┬───────────────┘  │
+│                  │                  │
+│  ┌───────────────▼───────────────┐  │
+│  │    Circuit Breaker Check      │  │
+│  └───────────────┬───────────────┘  │
+│                  │                  │
+│  ┌───────────────▼───────────────┐  │
+│  │     Load Balancer (RR)        │  │
+│  └───────────────┬───────────────┘  │
+│                  │                  │
+│  ┌───────────────▼───────────────┐  │
+│  │    Singleflight (GET only)    │  │
+│  └───────────────┬───────────────┘  │
+│                  │                  │
+│  ┌───────────────▼───────────────┐  │
+│  │      HTTP Forwarding          │  │
+│  └───────────────────────────────┘  │
+└─────────────────────────────────────┘
+       │
+       ▼
+┌─────────────┐     ┌─────────────┐
+│  Backend 1  │     │  Backend 2  │
+└─────────────┘     └─────────────┘
+```
 
-- `cmd/`: Entry point for the application.
-- `internal/entity/`: Data models and structs.
-- `internal/repository/`: Data access objects (DAOs) for storage.
-- `internal/usecase/`: Business logic.
-- `pkg/utils/`: General utilities and helpers.
+### Components
 
-All interactions between packages use interfaces for easy mocking and testing.
+| Component | Layer | Responsibility |
+|-----------|-------|----------------|
+| `entity` | Domain | Data models (CircuitBreaker, Backend, LoadBalancer) |
+| `repository` | Data | Redis rate limiting, metrics storage |
+| `usecase` | Business | Proxy logic, health checking, rate limiting, circuit breaker management |
+| `pkg/*` | Shared | Constants, errors, metrics, middleware, utilities |
 
 ## Configuration
 
@@ -39,6 +83,7 @@ Create a `config.json` or `config.yaml` file in the root directory.
 {
   "listen_addr": ":8080",
   "enable_singleflight": true,
+  "health_check_interval": "30s",
   "redis": {
     "addr": "localhost:6379",
     "password": "",
@@ -113,6 +158,7 @@ Create a `config.json` or `config.yaml` file in the root directory.
 ```yaml
 listen_addr: ":8080"
 enable_singleflight: true
+health_check_interval: "30s"
 redis:
   addr: "localhost:6379"
   password: ""
@@ -167,35 +213,63 @@ backends:
       window: 10
 ```
 
-- `listen_addr`: Address to listen on for proxy requests.
-- `enable_singleflight`: Enable singleflight to deduplicate identical GET requests to reduce backend load (default false). Only applies to GET methods for safety.
-- `redis`: Redis configuration for rate limiting.
-- `backends`: List of backend services.
-  - `rate_limiter`:
-    - `type`: "sliding_window" or "token_bucket".
-    - `limit`: Max requests/tokens.
-    - `window`: Window in seconds for sliding, rate per second for token bucket.
-    - `dynamic`: Enable dynamic rate limiting based on upstream health.
-    - `damage_level`: Damage threshold (e.g., 0.5).
-    - `catastrophic_level`: Catastrophic threshold (e.g., 0.8).
-    - `healthy_increment`: Percentage increment when healthy (e.g., 0.01).
-    - `unhealthy_decrement`: Percentage decrement when unhealthy (e.g., 0.01).
-    - `priority`: Priority level (higher = more lenient limits).
-- `health_adjustment_factor`: Factor to reduce limit when unhealthy (default 0.5).
-- `readiness_adjustment_factor`: Factor to reduce limit when not ready (default 0.5).
-- `success_rate_threshold`: Threshold below which to adjust (default 0.8).
-- `success_rate_adjustment_factor`: Factor based on success rate (default 0.5).
-- `endpoints`: List of endpoint-specific configurations with path and rate_limiter.
-- `health_check_endpoint`: Endpoint for health checks (e.g., "/health").
-- `readiness_endpoint`: Endpoint for readiness checks (e.g., "/ready").
-- `statistics_endpoint`: Optional endpoint for success rate statistics (e.g., "/stats").
-  - `url`: Backend URL.
-  - `circuit_breaker`:
-    - `failure_threshold`: Threshold for failures (integer for ringbuffer, float for sliding window rate).
-    - `success_threshold`: Threshold for successes in half-open state.
-    - `timeout`: Timeout for open state.
-    - `counter_type`: "ringbuffer" or "sliding_window".
-    - `window_size`: Size of the window (count for ringbuffer, seconds for sliding window).
+### Configuration Options
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `listen_addr` | string | Yes | Address to listen on for proxy requests |
+| `enable_singleflight` | bool | No | Enable singleflight to deduplicate GET requests (default false) |
+| `health_check_interval` | string | No | Health check interval duration (e.g., "30s", "1m"; default "30s") |
+| `rate_limiter.type` | string | Yes | `sliding_window` or `token_bucket` |
+| `rate_limiter.limit` | int | Yes | Max requests/tokens |
+| `rate_limiter.window` | int | Yes | Window in seconds (sliding) or refill rate per second (token bucket) |
+| `rate_limiter.dynamic` | bool | No | Enable dynamic rate limiting based on upstream health |
+| `rate_limiter.damage_level` | float | No | Damage threshold (e.g., 0.5) |
+| `rate_limiter.catastrophic_level` | float | No | Catastrophic threshold (e.g., 0.8) |
+| `rate_limiter.healthy_increment` | float | No | Percentage increment when healthy (e.g., 0.01) |
+| `rate_limiter.unhealthy_decrement` | float | No | Percentage decrement when unhealthy (e.g., 0.01) |
+| `rate_limiter.priority` | int | No | Priority level (higher = more lenient limits) |
+| `rate_limiter.endpoints` | array | No | Endpoint-specific rate limits |
+| `circuit_breaker.failure_threshold` | float | Yes | Threshold for failures (integer for ringbuffer, float for sliding window rate) |
+| `circuit_breaker.success_threshold` | float | Yes | Threshold for successes in half-open state |
+| `circuit_breaker.timeout` | string | Yes | Timeout for open state (e.g., "10s") |
+| `circuit_breaker.counter_type` | string | Yes | `ringbuffer` or `sliding_window` |
+| `circuit_breaker.window_size` | int | Yes | Size of the window (count for ringbuffer, seconds for sliding window) |
+| `backends[].url` | string | Yes | Backend URL |
+| `backends[].health_check_endpoint` | string | No | Health check path |
+| `backends[].readiness_endpoint` | string | No | Readiness check path |
+| `backends[].statistics_endpoint` | string | No | Statistics endpoint path |
+| `redis.addr` | string | Yes | Redis address |
+| `redis.password` | string | No | Redis password |
+| `redis.db` | int | No | Redis database number |
+
+### Dynamic Rate Limiting
+
+Rate limits are automatically adjusted based on backend health:
+
+| Condition | Multiplier | Effect |
+|-----------|------------|--------|
+| Backend Healthy | 1.5x | Increased capacity |
+| Backend Ready | 1.3x | Moderate increase |
+| High Success Rate (>50%) | 1.2x | Slight increase |
+| Unhealthy Backend | 0.5x | Reduced capacity |
+
+This ensures traffic is throttled when backends are struggling.
+
+## Error Handling
+
+GoProxy uses structured error handling with user-friendly and developer-friendly messages:
+
+| Error Type | HTTP Status | Use Case |
+|------------|-------------|----------|
+| `NotFound` | 404 | Resource not found |
+| `InvalidInput` | 400 | Bad request |
+| `Internal` | 500 | Server error |
+| `External` | 502 | Backend error |
+| `RateLimitExceeded` | 429 | Rate limit hit |
+| `CircuitBreakerOpen` | 503 | Circuit breaker tripped |
+
+Errors include both a user message (safe for clients) and a developer message (for logging).
 
 ## Running
 
@@ -218,6 +292,9 @@ The codebase uses interfaces for dependency injection, allowing easy mocking wit
 - **Rate Limiting**: Tests sliding window and token bucket algorithms with mocks.
 - **High Traffic Handling**: Simulates 5000 concurrent requests to check stability and performance.
 - **Configuration Parsing**: Tests JSON and YAML config parsing with rate limiting.
+- **Health Checker**: Tests backend health monitoring, readiness checking, and success rate tracking.
+- **Header Sanitization**: Verifies blocked headers are stripped and allowed headers are forwarded.
+- **Middleware Panic Recovery**: Tests panic recovery and normal request passthrough.
 
 Run benchmarks: `go test -bench=. ./internal/usecase`
 
@@ -226,24 +303,6 @@ Run benchmarks: `go test -bench=. ./internal/usecase`
 - **Panic Recovery**: All HTTP handlers and core functions include panic recovery with detailed stack trace logging to prevent service crashes.
 - **Graceful Shutdown**: The server responds to interrupt signals (Ctrl+C, SIGTERM) and allows up to 30 seconds for active requests to complete before shutting down.
 - **Atomic Operations**: Dynamic rate limiting uses atomic counters and mutexes for thread-safe adjustments under high concurrency.
-
-## Metrics
-
-The proxy exposes Prometheus metrics at `/metrics` endpoint:
-
-- `proxy_traffic_success_total{upstream, endpoint}`: Successful requests
-- `proxy_traffic_blocked_total{upstream, endpoint, reason}`: Blocked requests (rate_limit, circuit_breaker, etc.)
-- `proxy_circuit_breaker_state{upstream}`: Circuit breaker state (0=closed, 1=half-open, 2=open)
-- `proxy_rate_limit_reached_total{upstream, endpoint}`: Rate limit threshold hits
-
-### Test Cases Covered
-- **Normal Proxy Operation**: Verifies requests are forwarded correctly when backend is healthy.
-- **Circuit Breaker Open**: Ensures requests are blocked when circuit is open.
-- **Circuit Breaker Half-Open**: Tests transition from half-open to closed on successes.
-- **High Traffic Handling**: Simulates 5000 concurrent requests to check stability and performance.
-- **Configuration Loading**: Tests JSON and YAML config parsing.
-
-Run benchmarks: `go test -bench=. ./internal/usecase`
 
 ## Metrics
 

@@ -1,3 +1,17 @@
+// Package repository provides data access implementations.
+//
+// NOTE: InMemoryMetricsRepository is currently unused.
+// It was designed for storing metrics in memory for:
+// - Development/testing environments without Prometheus
+// - Historical metrics aggregation
+// - Dashboard data sources
+//
+// To use this repository:
+// 1. Instantiate in main.go: metricsRepo := repository.NewInMemoryMetricsRepository()
+// 2. Pass to usecases that need metrics storage
+// 3. Call repository methods to record/retrieve metrics
+//
+// Consider deleting this file if not needed within 3 months.
 package repository
 
 import (

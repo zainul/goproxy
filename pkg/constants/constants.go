@@ -37,3 +37,35 @@ const (
 	TestScenarioConfigJSON        = "Load configuration from JSON"
 	TestScenarioConfigYAML        = "Load configuration from YAML"
 )
+
+// Headers to block from forwarding
+var BlockedHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailers",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+// Headers to allow forwarding (if empty, all non-blocked headers are allowed)
+var AllowedHeaders = []string{
+	"Accept",
+	"Accept-Encoding",
+	"Accept-Language",
+	"Authorization",
+	"Cache-Control",
+	"Content-Type",
+	"Date",
+	"If-Match",
+	"If-Modified-Since",
+	"If-None-Match",
+	"If-Range",
+	"If-Unmodified-Since",
+	"Origin",
+	"Range",
+	"Referer",
+	"User-Agent",
+}
