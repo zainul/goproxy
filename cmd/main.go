@@ -43,7 +43,12 @@ func main() {
 	rlRepo := repository.NewRedisRateLimiterRepository(rdb)
 
 	// Initialize health checker
-	healthChecker := usecase.NewHealthChecker(30 * time.Second) // Check every 30 seconds
+	healthCheckInterval, err := time.ParseDuration(config.HealthCheckInterval)
+	if err != nil {
+		log.Fatalf("Invalid health_check_interval: %v", err)
+	}
+	log.Printf("Starting health checker with interval: %s", healthCheckInterval)
+	healthChecker := usecase.NewHealthChecker(healthCheckInterval)
 
 	// Initialize usecases
 	cbManager := usecase.NewCircuitBreakerManager()
