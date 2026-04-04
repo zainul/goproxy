@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"goproxy/internal/entity"
@@ -27,6 +28,26 @@ type ProxyResponse struct {
 	StatusCode int
 	Header     http.Header
 	Body       []byte
+}
+
+func isHeaderAllowed(header string) bool {
+	for _, blocked := range constants.BlockedHeaders {
+		if strings.EqualFold(header, blocked) {
+			return false
+		}
+	}
+
+	if len(constants.AllowedHeaders) == 0 {
+		return true
+	}
+
+	for _, allowed := range constants.AllowedHeaders {
+		if strings.EqualFold(header, allowed) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // HTTPProxy implements ProxyUsecase
@@ -175,6 +196,9 @@ func (p *HTTPProxy) doRequest(r *http.Request, backendURL, endpoint string) (res
 	}
 
 	for k, v := range r.Header {
+		if !isHeaderAllowed(k) {
+			continue
+		}
 		req.Header[k] = v
 	}
 

@@ -316,3 +316,55 @@ func BenchmarkHTTPProxy_ForwardRequest(b *testing.B) {
 	})
 	b.Logf("Output: Completed %d iterations", b.N)
 }
+
+func TestHeaderSanitization(t *testing.T) {
+	var receivedHeaders map[string]string
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		receivedHeaders = make(map[string]string)
+		for key, values := range r.Header {
+			if len(values) > 0 {
+				receivedHeaders[key] = values[0]
+			}
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodGet, server.URL+"/test", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "TestClient/1.0")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("X-Custom-Header", "custom-value")
+
+	mockCB := &MockCircuitBreakerUsecase{}
+	mockCB.On("CanExecute", server.URL).Return(true)
+	mockCB.On("RecordSuccess", server.URL).Return()
+
+	mockRL := &MockRateLimiterUsecase{}
+	mockRL.On("Allow", mock.Anything, server.URL).Return(true, nil)
+	mockRL.On("AllowEndpoint", mock.Anything, server.URL, "/test").Return(true, nil)
+
+	lb := entity.NewLoadBalancer([]*entity.Backend{
+		{URL: server.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
+	})
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
+
+	w := httptest.NewRecorder()
+	err := proxy.ForwardRequest(w, req, "/test")
+
+	assert.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	assert.NotContains(t, receivedHeaders, "Connection")
+	assert.Contains(t, receivedHeaders, "Authorization")
+	assert.Contains(t, receivedHeaders, "Content-Type")
+	assert.Contains(t, receivedHeaders, "User-Agent")
+	assert.NotContains(t, receivedHeaders, "X-Custom-Header")
+}
