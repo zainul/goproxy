@@ -67,6 +67,7 @@ type RedisConfig struct {
 type Config struct {
 	ListenAddr          string          `json:"listen_addr" yaml:"listen_addr"`
 	EnableSingleflight  bool            `json:"enable_singleflight" yaml:"enable_singleflight"`
+	ShutdownTimeout     string          `json:"shutdown_timeout" yaml:"shutdown_timeout"`
 	Redis               RedisConfig     `json:"redis" yaml:"redis"`
 	Backends            []BackendConfig `json:"backends" yaml:"backends"`
 	HealthCheckInterval string          `json:"health_check_interval" yaml:"health_check_interval"`

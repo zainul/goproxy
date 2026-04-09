@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -79,7 +78,6 @@ func main() {
 
 	// Start health checker worker
 	hctx, hcancel := context.WithCancel(context.Background())
-	defer hcancel()
 	go healthChecker.Start(hctx, config.Backends)
 
 	// HTTP handlers with panic recovery
@@ -98,7 +96,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:    config.ListenAddr,
-		Handler: nil, // Uses default mux
+		Handler: http.DefaultServeMux,
 	}
 
 	// Channel to listen for interrupt signal
@@ -107,7 +105,7 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		fmt.Printf("Starting proxy on %s\n", config.ListenAddr)
+		log.Printf("Starting proxy server on %s", config.ListenAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed to start: %v", err)
 		}
@@ -117,13 +115,28 @@ func main() {
 	<-done
 	log.Println("Shutting down server...")
 
-	// Create context with timeout for graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Create context with timeout for graceful shutdown from config
+	shutdownTimeout, err := time.ParseDuration(config.ShutdownTimeout)
+	if err != nil {
+		log.Printf("Invalid shutdown_timeout: %v, using default 30s", err)
+		shutdownTimeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	// Gracefully shutdown server
+	// Cancel health checker to stop background work and close Redis
+	hcancel()
+
+	// Gracefully shutdown server and close Redis connection
 	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		log.Printf("Server forced to shutdown: %v", err)
+	}
+
+	// Close Redis client connection
+	if rdb != nil {
+		if err := rdb.Close(); err != nil {
+			log.Printf("Error closing Redis client: %v", err)
+		}
 	}
 
 	log.Println("Server exited")
