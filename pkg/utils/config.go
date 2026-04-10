@@ -3,6 +3,7 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -83,6 +84,7 @@ type Config struct {
 	ListenAddr          string          `json:"listen_addr" yaml:"listen_addr"`
 	EnableSingleflight  bool            `json:"enable_singleflight" yaml:"enable_singleflight"`
 	ShutdownTimeout     string          `json:"shutdown_timeout" yaml:"shutdown_timeout"`
+	RateLimiterStorage  string          `json:"rate_limiter_storage" yaml:"rate_limiter_storage"` // "memory" or "redis", default "memory"
 	Redis               RedisConfig     `json:"redis" yaml:"redis"`
 	Backends            []BackendConfig `json:"backends" yaml:"backends"`
 	HealthCheckInterval string          `json:"health_check_interval" yaml:"health_check_interval"`
@@ -123,6 +125,17 @@ func LoadConfig(filename string) (*Config, error) {
 	// Set default health check interval if not specified
 	if config.HealthCheckInterval == "" {
 		config.HealthCheckInterval = "30s"
+	}
+
+	// Validate rate limiter storage type (default to "memory" if not specified)
+	if config.RateLimiterStorage == "" {
+		config.RateLimiterStorage = "memory"
+		log.Println("Using in-memory rate limiter (default)")
+	}
+
+	validStorageTypes := map[string]bool{"memory": true, "redis": true}
+	if !validStorageTypes[config.RateLimiterStorage] {
+		return nil, fmt.Errorf("rate_limiter_storage must be 'memory' or 'redis', got '%s'", config.RateLimiterStorage)
 	}
 
 	// Set transport defaults for high throughput

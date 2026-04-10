@@ -2,6 +2,7 @@
   "listen_addr": ":8080",
   "enable_singleflight": true,
   "health_check_interval": "30s",
+  "rate_limiter_storage": "memory",
   "redis": {
     "addr": "localhost:6379",
     "password": "",

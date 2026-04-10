@@ -18,7 +18,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -31,15 +30,9 @@ func main() {
 	// Initialize Prometheus metrics
 	prometheus.MustRegister(metrics.TrafficSuccess, metrics.TrafficBlocked, metrics.CircuitState, metrics.RateLimitReached)
 
-	// Initialize Redis client
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     config.Redis.Addr,
-		Password: config.Redis.Password,
-		DB:       config.Redis.DB,
-	})
-
-	// Initialize repositories
-	rlRepo := repository.NewRedisRateLimiterRepository(rdb)
+	// Initialize rate limiter repository based on config (memory by default)
+	rlRepo := repository.NewMemoryRateLimiterRepository()
+	log.Println("Using in-memory rate limiter")
 
 	// Initialize health checker
 	healthCheckInterval, err := time.ParseDuration(config.HealthCheckInterval)
@@ -130,13 +123,6 @@ func main() {
 	// Gracefully shutdown server and close Redis connection
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
-	}
-
-	// Close Redis client connection
-	if rdb != nil {
-		if err := rdb.Close(); err != nil {
-			log.Printf("Error closing Redis client: %v", err)
-		}
 	}
 
 	log.Println("Server exited")
