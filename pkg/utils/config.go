@@ -63,6 +63,21 @@ type RedisConfig struct {
 	DB       int    `json:"db" yaml:"db"`
 }
 
+// TransportConfig holds HTTP transport tuning parameters
+type TransportConfig struct {
+	MaxIdleConns          int    `json:"max_idle_conns" yaml:"max_idle_conns"`
+	MaxIdleConnsPerHost   int    `json:"max_idle_conns_per_host" yaml:"max_idle_conns_per_host"`
+	MaxConnsPerHost       int    `json:"max_conns_per_host" yaml:"max_conns_per_host"`
+	IdleConnTimeout       string `json:"idle_conn_timeout" yaml:"idle_conn_timeout"`
+	TLSHandshakeTimeout   string `json:"tls_handshake_timeout" yaml:"tls_handshake_timeout"`
+	ResponseHeaderTimeout string `json:"response_header_timeout" yaml:"response_header_timeout"`
+	ExpectContinueTimeout string `json:"expect_continue_timeout" yaml:"expect_continue_timeout"`
+	DisableKeepAlives     bool   `json:"disable_keep_alives" yaml:"disable_keep_alives"`
+	DisableCompression    bool   `json:"disable_compression" yaml:"disable_compression"`
+	WriteBufferSize       int    `json:"write_buffer_size" yaml:"write_buffer_size"`
+	ReadBufferSize        int    `json:"read_buffer_size" yaml:"read_buffer_size"`
+}
+
 // Config holds the overall configuration
 type Config struct {
 	ListenAddr          string          `json:"listen_addr" yaml:"listen_addr"`
@@ -71,6 +86,7 @@ type Config struct {
 	Redis               RedisConfig     `json:"redis" yaml:"redis"`
 	Backends            []BackendConfig `json:"backends" yaml:"backends"`
 	HealthCheckInterval string          `json:"health_check_interval" yaml:"health_check_interval"`
+	Transport           TransportConfig `json:"transport" yaml:"transport"`
 }
 
 // LoadConfig loads configuration from JSON or YAML file
@@ -107,6 +123,35 @@ func LoadConfig(filename string) (*Config, error) {
 	// Set default health check interval if not specified
 	if config.HealthCheckInterval == "" {
 		config.HealthCheckInterval = "30s"
+	}
+
+	// Set transport defaults for high throughput
+	if config.Transport.MaxIdleConns == 0 {
+		config.Transport.MaxIdleConns = 1000
+	}
+	if config.Transport.MaxIdleConnsPerHost == 0 {
+		config.Transport.MaxIdleConnsPerHost = 200
+	}
+	if config.Transport.MaxConnsPerHost == 0 {
+		config.Transport.MaxConnsPerHost = 500
+	}
+	if config.Transport.IdleConnTimeout == "" {
+		config.Transport.IdleConnTimeout = "90s"
+	}
+	if config.Transport.TLSHandshakeTimeout == "" {
+		config.Transport.TLSHandshakeTimeout = "5s"
+	}
+	if config.Transport.ResponseHeaderTimeout == "" {
+		config.Transport.ResponseHeaderTimeout = "10s"
+	}
+	if config.Transport.ExpectContinueTimeout == "" {
+		config.Transport.ExpectContinueTimeout = "1s"
+	}
+	if config.Transport.WriteBufferSize == 0 {
+		config.Transport.WriteBufferSize = 32 * 1024 // 32KB
+	}
+	if config.Transport.ReadBufferSize == 0 {
+		config.Transport.ReadBufferSize = 32 * 1024 // 32KB
 	}
 
 	// Run comprehensive validation
@@ -181,6 +226,41 @@ func ValidateConfig(config *Config) error {
 		_, hcErr := time.ParseDuration(config.HealthCheckInterval)
 		if hcErr != nil {
 			errors = append(errors, fmt.Sprintf("health_check_interval is invalid: %v", hcErr))
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("configuration validation failed:\n  - %s", strings.Join(errors, "\n  - "))
+	}
+
+	// Validate transport config
+	if config.Transport.MaxIdleConns < 0 {
+		errors = append(errors, "transport.max_idle_conns must be non-negative")
+	}
+	if config.Transport.MaxIdleConnsPerHost < 0 {
+		errors = append(errors, "transport.max_idle_conns_per_host must be non-negative")
+	}
+	if config.Transport.MaxConnsPerHost < 0 {
+		errors = append(errors, "transport.max_conns_per_host must be non-negative")
+	}
+	if config.Transport.IdleConnTimeout != "" {
+		if _, err := time.ParseDuration(config.Transport.IdleConnTimeout); err != nil {
+			errors = append(errors, fmt.Sprintf("transport.idle_conn_timeout is invalid: %v", err))
+		}
+	}
+	if config.Transport.TLSHandshakeTimeout != "" {
+		if _, err := time.ParseDuration(config.Transport.TLSHandshakeTimeout); err != nil {
+			errors = append(errors, fmt.Sprintf("transport.tls_handshake_timeout is invalid: %v", err))
+		}
+	}
+	if config.Transport.ResponseHeaderTimeout != "" {
+		if _, err := time.ParseDuration(config.Transport.ResponseHeaderTimeout); err != nil {
+			errors = append(errors, fmt.Sprintf("transport.response_header_timeout is invalid: %v", err))
+		}
+	}
+	if config.Transport.ExpectContinueTimeout != "" {
+		if _, err := time.ParseDuration(config.Transport.ExpectContinueTimeout); err != nil {
+			errors = append(errors, fmt.Sprintf("transport.expect_continue_timeout is invalid: %v", err))
 		}
 	}
 

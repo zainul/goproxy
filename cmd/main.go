@@ -65,7 +65,7 @@ func main() {
 	}
 	lb := entity.NewLoadBalancer(backends)
 
-	proxy := usecase.NewHTTPProxy(cbManager, rlManager, lb, config.EnableSingleflight, 30*time.Second)
+	proxy := usecase.NewHTTPProxy(cbManager, rlManager, lb, config.EnableSingleflight, 30*time.Second, &config.Transport)
 
 	// Add circuit breakers and rate limiters for backends
 	for _, backend := range config.Backends {

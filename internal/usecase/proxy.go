@@ -14,6 +14,7 @@ import (
 	"goproxy/pkg/constants"
 	"goproxy/pkg/errors"
 	"goproxy/pkg/metrics"
+	"goproxy/pkg/utils"
 
 	"golang.org/x/sync/singleflight"
 )
@@ -61,19 +62,35 @@ type HTTPProxy struct {
 }
 
 // NewHTTPProxy creates a new HTTPProxy
-func NewHTTPProxy(cbManager CircuitBreakerUsecase, rlManager RateLimiterUsecase, lb *entity.LoadBalancer, enableSingleflight bool, timeout time.Duration) *HTTPProxy {
+func NewHTTPProxy(cbManager CircuitBreakerUsecase, rlManager RateLimiterUsecase, lb *entity.LoadBalancer, enableSingleflight bool, timeout time.Duration, transport *utils.TransportConfig) *HTTPProxy {
+	idleConnTimeout, _ := time.ParseDuration(transport.IdleConnTimeout)
+	tlsHandshakeTimeout, _ := time.ParseDuration(transport.TLSHandshakeTimeout)
+	responseHeaderTimeout, _ := time.ParseDuration(transport.ResponseHeaderTimeout)
+	expectContinueTimeout, _ := time.ParseDuration(transport.ExpectContinueTimeout)
+
+	t := &http.Transport{
+		MaxIdleConns:          transport.MaxIdleConns,
+		MaxIdleConnsPerHost:   transport.MaxIdleConnsPerHost,
+		MaxConnsPerHost:       transport.MaxConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		ExpectContinueTimeout: expectContinueTimeout,
+		DisableKeepAlives:     transport.DisableKeepAlives,
+		DisableCompression:    transport.DisableCompression,
+		WriteBufferSize:       transport.WriteBufferSize,
+		ReadBufferSize:        transport.ReadBufferSize,
+		ForceAttemptHTTP2:     true,
+	}
+
 	return &HTTPProxy{
 		cbManager:          cbManager,
 		rlManager:          rlManager,
 		lb:                 lb,
 		enableSingleflight: enableSingleflight,
 		httpClient: &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
-			},
+			Timeout:   timeout,
+			Transport: t,
 		},
 	}
 }

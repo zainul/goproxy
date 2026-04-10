@@ -10,6 +10,7 @@ import (
 
 	"goproxy/internal/entity"
 	"goproxy/pkg/constants"
+	"goproxy/pkg/utils"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -57,6 +58,18 @@ func TestHTTPProxy_ForwardRequest_Healthy(t *testing.T) {
 	t.Logf("Scenario: %s", constants.TestScenarioNormalProxy)
 	t.Logf("Input: GET request to healthy backend, circuit breaker allows, rate limiter allows")
 
+	transport := &utils.TransportConfig{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       "90s",
+		TLSHandshakeTimeout:   "5s",
+		ResponseHeaderTimeout: "10s",
+		ExpectContinueTimeout: "1s",
+		WriteBufferSize:       32768,
+		ReadBufferSize:        32768,
+	}
+
 	// Mock backend
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -75,7 +88,7 @@ func TestHTTPProxy_ForwardRequest_Healthy(t *testing.T) {
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
 	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 	w := httptest.NewRecorder()
@@ -101,6 +114,18 @@ func TestHTTPProxy_ForwardRequest_Unhealthy(t *testing.T) {
 	t.Logf("Scenario: %s", constants.TestScenarioUnhealthyBackend)
 	t.Logf("Input: GET request to backend that returns 500, circuit breaker allows, rate limiter allows")
 
+	transport := &utils.TransportConfig{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       "90s",
+		TLSHandshakeTimeout:   "5s",
+		ResponseHeaderTimeout: "10s",
+		ExpectContinueTimeout: "1s",
+		WriteBufferSize:       32768,
+		ReadBufferSize:        32768,
+	}
+
 	// Mock backend that fails
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -118,7 +143,7 @@ func TestHTTPProxy_ForwardRequest_Unhealthy(t *testing.T) {
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
 	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 	w := httptest.NewRecorder()
@@ -141,6 +166,18 @@ func TestHTTPProxy_ForwardRequest_CircuitOpen(t *testing.T) {
 	t.Logf("Scenario: %s", constants.TestScenarioCircuitOpen)
 	t.Logf("Input: GET request, circuit breaker denies execution")
 
+	transport := &utils.TransportConfig{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       "90s",
+		TLSHandshakeTimeout:   "5s",
+		ResponseHeaderTimeout: "10s",
+		ExpectContinueTimeout: "1s",
+		WriteBufferSize:       32768,
+		ReadBufferSize:        32768,
+	}
+
 	mockCB := &MockCircuitBreakerUsecase{}
 	mockCB.On("CanExecute", "http://backend").Return(false)
 
@@ -151,7 +188,7 @@ func TestHTTPProxy_ForwardRequest_CircuitOpen(t *testing.T) {
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: "http://backend", IsHealthy: true, IsReady: true, SuccessRate: 1.0},
 	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 	w := httptest.NewRecorder()
@@ -174,6 +211,18 @@ func TestHTTPProxy_ForwardRequest_RateLimitExceeded(t *testing.T) {
 	t.Logf("Scenario: %s", constants.TestScenarioRateLimitExceeded)
 	t.Logf("Input: GET request, rate limiter denies")
 
+	transport := &utils.TransportConfig{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       "90s",
+		TLSHandshakeTimeout:   "5s",
+		ResponseHeaderTimeout: "10s",
+		ExpectContinueTimeout: "1s",
+		WriteBufferSize:       32768,
+		ReadBufferSize:        32768,
+	}
+
 	mockCB := &MockCircuitBreakerUsecase{}
 	mockRL := &MockRateLimiterUsecase{}
 
@@ -182,7 +231,7 @@ func TestHTTPProxy_ForwardRequest_RateLimitExceeded(t *testing.T) {
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: "http://backend", IsHealthy: true, IsReady: true, SuccessRate: 1.0},
 	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 	w := httptest.NewRecorder()
@@ -203,6 +252,18 @@ func TestHTTPProxy_ForwardRequest_RateLimitExceeded(t *testing.T) {
 func TestHTTPProxy_HighTraffic_HalfOpen(t *testing.T) {
 	t.Logf("Scenario: %s", constants.TestScenarioHalfOpen)
 	t.Logf("Input: 5000 concurrent GET requests to backend that starts failing then succeeds")
+
+	transport := &utils.TransportConfig{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       "90s",
+		TLSHandshakeTimeout:   "5s",
+		ResponseHeaderTimeout: "10s",
+		ExpectContinueTimeout: "1s",
+		WriteBufferSize:       32768,
+		ReadBufferSize:        32768,
+	}
 
 	// Backend that is partially healthy: first few fail, then succeed
 	var callCount int
@@ -233,7 +294,7 @@ func TestHTTPProxy_HighTraffic_HalfOpen(t *testing.T) {
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
 	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	// Simulate 5000 requests concurrently
 	numRequests := 5000
@@ -283,6 +344,18 @@ func BenchmarkHTTPProxy_ForwardRequest(b *testing.B) {
 	b.Logf("Benchmark: HTTP Proxy Forward Request")
 	b.Logf("Input: Parallel GET requests to healthy backend with mocks for CB and RL")
 
+	transport := &utils.TransportConfig{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       "90s",
+		TLSHandshakeTimeout:   "5s",
+		ResponseHeaderTimeout: "10s",
+		ExpectContinueTimeout: "1s",
+		WriteBufferSize:       32768,
+		ReadBufferSize:        32768,
+	}
+
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -300,7 +373,7 @@ func BenchmarkHTTPProxy_ForwardRequest(b *testing.B) {
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
 	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
 
@@ -341,6 +414,18 @@ func TestHeaderSanitization(t *testing.T) {
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("X-Custom-Header", "custom-value")
 
+	transport := &utils.TransportConfig{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       "90s",
+		TLSHandshakeTimeout:   "5s",
+		ResponseHeaderTimeout: "10s",
+		ExpectContinueTimeout: "1s",
+		WriteBufferSize:       32768,
+		ReadBufferSize:        32768,
+	}
+
 	mockCB := &MockCircuitBreakerUsecase{}
 	mockCB.On("CanExecute", server.URL).Return(true)
 	mockCB.On("RecordSuccess", server.URL).Return()
@@ -352,7 +437,7 @@ func TestHeaderSanitization(t *testing.T) {
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: server.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
 	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second)
+	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	w := httptest.NewRecorder()
 	err := proxy.ForwardRequest(w, req, "/test")
