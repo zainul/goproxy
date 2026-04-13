@@ -2,6 +2,7 @@
   "listen_addr": ":8080",
   "enable_singleflight": true,
   "health_check_interval": "30s",
+  "rate_limiter_storage": "memory",
   "redis": {
     "addr": "localhost:6379",
     "password": "",
@@ -56,8 +57,14 @@
       "readiness_endpoint": "/ready",
       "statistics_endpoint": "/stats"
     }
-  ]
-},
+  ],
+  "server": {
+    "read_timeout": "30s",
+    "write_timeout": "60s",
+    "read_header_timeout": "5s",
+    "idle_timeout": "120s",
+    "max_header_bytes": 65536
+  },
   "transport": {
     "max_idle_conns": 1000,
     "max_idle_conns_per_host": 200,

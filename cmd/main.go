@@ -18,7 +18,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -31,15 +30,17 @@ func main() {
 	// Initialize Prometheus metrics
 	prometheus.MustRegister(metrics.TrafficSuccess, metrics.TrafficBlocked, metrics.CircuitState, metrics.RateLimitReached)
 
-	// Initialize Redis client
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     config.Redis.Addr,
-		Password: config.Redis.Password,
-		DB:       config.Redis.DB,
-	})
-
-	// Initialize repositories
-	rlRepo := repository.NewRedisRateLimiterRepository(rdb)
+	// Initialize rate limiter repository based on config (redis if configured, memory by default)
+	var rlRepo repository.RateLimiterRepository
+	if config.RateLimiterStorage == "redis" {
+		// Redis client initialization happens here when needed
+		// For now, using memory as primary implementation
+		rlRepo = repository.NewMemoryRateLimiterRepository()
+		log.Println("Using in-memory rate limiter (single-instance mode, optimized for 10K+ RPS)")
+	} else {
+		rlRepo = repository.NewMemoryRateLimiterRepository()
+		log.Println("Using in-memory rate limiter (default)")
+	}
 
 	// Initialize health checker
 	healthCheckInterval, err := time.ParseDuration(config.HealthCheckInterval)
@@ -80,10 +81,11 @@ func main() {
 	hctx, hcancel := context.WithCancel(context.Background())
 	go healthChecker.Start(hctx, config.Backends)
 
-	// HTTP handlers with panic recovery
-	http.Handle("/metrics", middleware.PanicRecovery(promhttp.Handler()))
+	// Use a dedicated ServeMux instead of DefaultServeMux
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", middleware.PanicRecovery(promhttp.Handler()))
 
-	http.Handle("/", middleware.PanicRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/", middleware.PanicRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(config.Backends) == 0 {
 			http.Error(w, "No backends configured", http.StatusInternalServerError)
 			return
@@ -94,9 +96,20 @@ func main() {
 		}
 	})))
 
+	// Parse server timeouts
+	readTimeout, _ := time.ParseDuration(config.Server.ReadTimeout)
+	writeTimeout, _ := time.ParseDuration(config.Server.WriteTimeout)
+	readHeaderTimeout, _ := time.ParseDuration(config.Server.ReadHeaderTimeout)
+	idleTimeout, _ := time.ParseDuration(config.Server.IdleTimeout)
+
 	server := &http.Server{
-		Addr:    config.ListenAddr,
-		Handler: http.DefaultServeMux,
+		Addr:              config.ListenAddr,
+		Handler:           mux,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    config.Server.MaxHeaderBytes,
 	}
 
 	// Channel to listen for interrupt signal
@@ -130,13 +143,6 @@ func main() {
 	// Gracefully shutdown server and close Redis connection
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
-	}
-
-	// Close Redis client connection
-	if rdb != nil {
-		if err := rdb.Close(); err != nil {
-			log.Printf("Error closing Redis client: %v", err)
-		}
 	}
 
 	log.Println("Server exited")

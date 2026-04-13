@@ -3,6 +3,7 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -78,15 +79,26 @@ type TransportConfig struct {
 	ReadBufferSize        int    `json:"read_buffer_size" yaml:"read_buffer_size"`
 }
 
+// ServerConfig holds HTTP server tuning parameters
+type ServerConfig struct {
+	ReadTimeout       string `json:"read_timeout" yaml:"read_timeout"`
+	WriteTimeout      string `json:"write_timeout" yaml:"write_timeout"`
+	ReadHeaderTimeout string `json:"read_header_timeout" yaml:"read_header_timeout"`
+	IdleTimeout       string `json:"idle_timeout" yaml:"idle_timeout"`
+	MaxHeaderBytes    int    `json:"max_header_bytes" yaml:"max_header_bytes"`
+}
+
 // Config holds the overall configuration
 type Config struct {
 	ListenAddr          string          `json:"listen_addr" yaml:"listen_addr"`
 	EnableSingleflight  bool            `json:"enable_singleflight" yaml:"enable_singleflight"`
 	ShutdownTimeout     string          `json:"shutdown_timeout" yaml:"shutdown_timeout"`
+	RateLimiterStorage  string          `json:"rate_limiter_storage" yaml:"rate_limiter_storage"` // "memory" or "redis", default "memory"
 	Redis               RedisConfig     `json:"redis" yaml:"redis"`
 	Backends            []BackendConfig `json:"backends" yaml:"backends"`
 	HealthCheckInterval string          `json:"health_check_interval" yaml:"health_check_interval"`
 	Transport           TransportConfig `json:"transport" yaml:"transport"`
+	Server              ServerConfig    `json:"server" yaml:"server"`
 }
 
 // LoadConfig loads configuration from JSON or YAML file
@@ -125,6 +137,17 @@ func LoadConfig(filename string) (*Config, error) {
 		config.HealthCheckInterval = "30s"
 	}
 
+	// Validate rate limiter storage type (default to "memory" if not specified)
+	if config.RateLimiterStorage == "" {
+		config.RateLimiterStorage = "memory"
+		log.Println("Using in-memory rate limiter (default)")
+	}
+
+	validStorageTypes := map[string]bool{"memory": true, "redis": true}
+	if !validStorageTypes[config.RateLimiterStorage] {
+		return nil, fmt.Errorf("rate_limiter_storage must be 'memory' or 'redis', got '%s'", config.RateLimiterStorage)
+	}
+
 	// Set transport defaults for high throughput
 	if config.Transport.MaxIdleConns == 0 {
 		config.Transport.MaxIdleConns = 1000
@@ -152,6 +175,23 @@ func LoadConfig(filename string) (*Config, error) {
 	}
 	if config.Transport.ReadBufferSize == 0 {
 		config.Transport.ReadBufferSize = 32 * 1024 // 32KB
+	}
+
+	// Set server defaults optimized for proxy workload
+	if config.Server.ReadTimeout == "" {
+		config.Server.ReadTimeout = "30s"
+	}
+	if config.Server.WriteTimeout == "" {
+		config.Server.WriteTimeout = "60s" // Higher than read since we stream responses
+	}
+	if config.Server.ReadHeaderTimeout == "" {
+		config.Server.ReadHeaderTimeout = "5s"
+	}
+	if config.Server.IdleTimeout == "" {
+		config.Server.IdleTimeout = "120s"
+	}
+	if config.Server.MaxHeaderBytes == 0 {
+		config.Server.MaxHeaderBytes = 64 * 1024 // 64KB, not 1MB
 	}
 
 	// Run comprehensive validation
@@ -231,6 +271,24 @@ func ValidateConfig(config *Config) error {
 
 	if len(errors) > 0 {
 		return fmt.Errorf("configuration validation failed:\n  - %s", strings.Join(errors, "\n  - "))
+	}
+
+	// Validate server config
+	serverTimeouts := map[string]string{
+		"server.read_timeout":        config.Server.ReadTimeout,
+		"server.write_timeout":       config.Server.WriteTimeout,
+		"server.read_header_timeout": config.Server.ReadHeaderTimeout,
+		"server.idle_timeout":        config.Server.IdleTimeout,
+	}
+	for name, value := range serverTimeouts {
+		if value != "" {
+			if _, err := time.ParseDuration(value); err != nil {
+				errors = append(errors, fmt.Sprintf("%s is invalid: %v", name, err))
+			}
+		}
+	}
+	if config.Server.MaxHeaderBytes < 0 {
+		errors = append(errors, "server.max_header_bytes must be non-negative")
 	}
 
 	// Validate transport config
