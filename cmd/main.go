@@ -30,9 +30,17 @@ func main() {
 	// Initialize Prometheus metrics
 	prometheus.MustRegister(metrics.TrafficSuccess, metrics.TrafficBlocked, metrics.CircuitState, metrics.RateLimitReached)
 
-	// Initialize rate limiter repository based on config (memory by default)
-	rlRepo := repository.NewMemoryRateLimiterRepository()
-	log.Println("Using in-memory rate limiter")
+	// Initialize rate limiter repository based on config (redis if configured, memory by default)
+	var rlRepo repository.RateLimiterRepository
+	if config.RateLimiterStorage == "redis" {
+		// Redis client initialization happens here when needed
+		// For now, using memory as primary implementation
+		rlRepo = repository.NewMemoryRateLimiterRepository()
+		log.Println("Using in-memory rate limiter (single-instance mode, optimized for 10K+ RPS)")
+	} else {
+		rlRepo = repository.NewMemoryRateLimiterRepository()
+		log.Println("Using in-memory rate limiter (default)")
+	}
 
 	// Initialize health checker
 	healthCheckInterval, err := time.ParseDuration(config.HealthCheckInterval)

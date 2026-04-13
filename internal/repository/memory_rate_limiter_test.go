@@ -2,93 +2,119 @@ package repository
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
-func TestNewMemoryRateLimiterRepository(t *testing.T) {
+func TestMemoryRateLimiter_SlidingWindow_AllowWithinLimit(t *testing.T) {
 	repo := NewMemoryRateLimiterRepository()
-	if repo == nil {
-		t.Fatal("Expected non-nil repository")
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		allowed, err := repo.Allow(ctx, "test-key", 10, time.Minute)
+		assert.NoError(t, err)
+		assert.True(t, allowed)
 	}
 }
 
-func TestMemoryRateLimiterAllow(t *testing.T) {
+func TestMemoryRateLimiter_SlidingWindow_BlocksOverLimit(t *testing.T) {
 	repo := NewMemoryRateLimiterRepository()
-	if repo == nil {
-		t.Fatal("Expected non-nil repository")
+	ctx := context.Background()
+
+	// Fill up limit
+	for i := 0; i < 10; i++ {
+		allowed, err := repo.Allow(ctx, "test-key", 10, time.Minute)
+		assert.NoError(t, err)
+		assert.True(t, allowed)
 	}
 
-	ctx := context.Background()
-	key := "test-key"
-	limit := 10
-	window := 1 * time.Second
-	
-	for i := 0; i < limit+2; i++ {
-		allowed, err := repo.Allow(ctx, key, limit, window)
-		if err != nil {
-			t.Fatalf("Allow returned error: %v", err)
-		}
-		
-		expectedAllowed := i < limit
-		if allowed != expectedAllowed {
-			t.Errorf("At iteration %d: expected allowed=%v, got allowed=%v", i, expectedAllowed, allowed)
-		}
-	}
+	// 11th request should be blocked
+	allowed, err := repo.Allow(ctx, "test-key", 10, time.Minute)
+	assert.NoError(t, err)
+	assert.False(t, allowed)
 }
 
-func TestMemoryRateLimiterAllowReturnsTrueWhenUnderLimit(t *testing.T) {
+func TestMemoryRateLimiter_SlidingWindow_WindowExpiry(t *testing.T) {
 	repo := NewMemoryRateLimiterRepository()
-	
 	ctx := context.Background()
-	key := "test-key"
-	limit := 5
-	
-	for i := 0; i < limit; i++ {
-		allowed, err := repo.Allow(ctx, key, limit, time.Second)
-		if err != nil {
-			t.Fatalf("Allow returned error: %v", err)
-		}
-		if !allowed {
-			t.Errorf("Expected allowed=true when under limit")
-		}
-	}
-}
 
-func TestMemoryRateLimiterAllowReturnsFalseWhenExceeded(t *testing.T) {
-	repo := NewMemoryRateLimiterRepository()
-	
-	ctx := context.Background()
-	key := "test-key"
-	limit := 3
-	
-	for i := 0; i < limit+1; i++ {
-		allowed, err := repo.Allow(ctx, key, limit, time.Second)
-		if err != nil {
-			t.Fatalf("Allow returned error: %v", err)
-		}
-		if i >= limit && allowed {
-			t.Errorf("Expected allowed=false when rate limit exceeded")
-		}
-	}
-}
-
-func TestMemoryRateLimiterAllowReturnsBool(t *testing.T) {
-	repo := NewMemoryRateLimiterRepository()
-	
-	ctx := context.Background()
-	key := "test-key"
-	limit := 100
-	window := 1 * time.Second
-	
+	// Fill up limit with 100ms window
 	for i := 0; i < 5; i++ {
-		allowed, err := repo.Allow(ctx, key, limit, window)
-		if err != nil {
-			t.Fatalf("Allow returned error: %v", err)
-		}
-		
-		if !allowed && i < limit {
-			t.Errorf("Expected allowed=true for valid requests")
-		}
+		allowed, err := repo.Allow(ctx, "test-key", 5, 100*time.Millisecond)
+		assert.NoError(t, err)
+		assert.True(t, allowed)
 	}
+
+	// Should be blocked
+	allowed, err := repo.Allow(ctx, "test-key", 5, 100*time.Millisecond)
+	assert.NoError(t, err)
+	assert.False(t, allowed)
+
+	// Wait for window to expire
+	time.Sleep(150 * time.Millisecond)
+
+	// Should be allowed again
+	allowed, err = repo.Allow(ctx, "test-key", 5, 100*time.Millisecond)
+	assert.NoError(t, err)
+	assert.True(t, allowed)
+}
+
+func TestMemoryRateLimiter_TokenBucket_AllowWithinCapacity(t *testing.T) {
+	repo := NewMemoryRateLimiterRepository()
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		allowed, err := repo.AllowTokenBucket(ctx, "test-key", 10, 10)
+		assert.NoError(t, err)
+		assert.True(t, allowed)
+	}
+}
+
+func TestMemoryRateLimiter_TokenBucket_BlocksOverCapacity(t *testing.T) {
+	repo := NewMemoryRateLimiterRepository()
+	ctx := context.Background()
+
+	// Drain tokens
+	for i := 0; i < 10; i++ {
+		repo.AllowTokenBucket(ctx, "test-key", 1, 10)
+	}
+
+	// Should be blocked
+	allowed, err := repo.AllowTokenBucket(ctx, "test-key", 1, 10)
+	assert.NoError(t, err)
+	assert.False(t, allowed)
+}
+
+func TestMemoryRateLimiter_ConcurrentAccess(t *testing.T) {
+	repo := NewMemoryRateLimiterRepository()
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	allowed := int64(0)
+	blocked := int64(0)
+
+	limit := 100
+	goroutines := 200
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := repo.Allow(ctx, "concurrent-key", limit, time.Minute)
+			assert.NoError(t, err)
+			if ok {
+				atomic.AddInt64(&allowed, 1)
+			} else {
+				atomic.AddInt64(&blocked, 1)
+			}
+		}()
+	}
+
+	wg.Wait()
+	assert.Equal(t, int64(limit), allowed, "exactly 'limit' requests should be allowed")
+	assert.Equal(t, int64(goroutines-limit), blocked, "remaining should be blocked")
 }
