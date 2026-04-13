@@ -134,6 +134,10 @@ func (p *HTTPProxy) ForwardRequest(w http.ResponseWriter, r *http.Request, endpo
 	}
 	backendURL := backend.URL
 
+	// Track active connections for least-conn
+	backend.IncrementConns()
+	defer backend.DecrementConns()
+
 	// Check backend-wide rate limit first
 	allowed, err := p.rlManager.Allow(r.Context(), backendURL)
 	if err != nil {

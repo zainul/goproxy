@@ -56,6 +56,7 @@ type BackendConfig struct {
 	ReadinessEndpoint   string               `json:"readiness_endpoint" yaml:"readiness_endpoint"`
 	StatisticsEndpoint  string               `json:"statistics_endpoint" yaml:"statistics_endpoint"` // Optional
 	Timeout             string               `json:"timeout" yaml:"timeout"`                         // Per-backend timeout for request propagation
+	Weight              int                  `json:"weight" yaml:"weight"`                           // For weighted round-robin (default: 1)
 }
 
 // RedisConfig holds Redis configuration
@@ -91,15 +92,16 @@ type ServerConfig struct {
 
 // Config holds the overall configuration
 type Config struct {
-	ListenAddr          string          `json:"listen_addr" yaml:"listen_addr"`
-	EnableSingleflight  bool            `json:"enable_singleflight" yaml:"enable_singleflight"`
-	ShutdownTimeout     string          `json:"shutdown_timeout" yaml:"shutdown_timeout"`
-	RateLimiterStorage  string          `json:"rate_limiter_storage" yaml:"rate_limiter_storage"` // "memory" or "redis", default "memory"
-	Redis               RedisConfig     `json:"redis" yaml:"redis"`
-	Backends            []BackendConfig `json:"backends" yaml:"backends"`
-	HealthCheckInterval string          `json:"health_check_interval" yaml:"health_check_interval"`
-	Transport           TransportConfig `json:"transport" yaml:"transport"`
-	Server              ServerConfig    `json:"server" yaml:"server"`
+	ListenAddr           string          `json:"listen_addr" yaml:"listen_addr"`
+	EnableSingleflight   bool            `json:"enable_singleflight" yaml:"enable_singleflight"`
+	ShutdownTimeout      string          `json:"shutdown_timeout" yaml:"shutdown_timeout"`
+	RateLimiterStorage   string          `json:"rate_limiter_storage" yaml:"rate_limiter_storage"` // "memory" or "redis", default "memory"
+	LoadBalancerStrategy string          `json:"load_balancer_strategy" yaml:"load_balancer_strategy"`
+	Redis                RedisConfig     `json:"redis" yaml:"redis"`
+	Backends             []BackendConfig `json:"backends" yaml:"backends"`
+	HealthCheckInterval  string          `json:"health_check_interval" yaml:"health_check_interval"`
+	Transport            TransportConfig `json:"transport" yaml:"transport"`
+	Server               ServerConfig    `json:"server" yaml:"server"`
 }
 
 // LoadConfig loads configuration from JSON or YAML file
@@ -147,6 +149,21 @@ func LoadConfig(filename string) (*Config, error) {
 	validStorageTypes := map[string]bool{"memory": true, "redis": true}
 	if !validStorageTypes[config.RateLimiterStorage] {
 		return nil, fmt.Errorf("rate_limiter_storage must be 'memory' or 'redis', got '%s'", config.RateLimiterStorage)
+	}
+
+	// Default load balancer strategy
+	if config.LoadBalancerStrategy == "" {
+		config.LoadBalancerStrategy = "round_robin"
+		log.Println("Using round-robin load balancing (default)")
+	}
+
+	validStrategies := map[string]bool{
+		"round_robin":          true,
+		"weighted_round_robin": true,
+		"least_connections":    true,
+	}
+	if !validStrategies[config.LoadBalancerStrategy] {
+		return nil, fmt.Errorf("load_balancer_strategy must be 'round_robin', 'weighted_round_robin', or 'least_connections', got '%s'", config.LoadBalancerStrategy)
 	}
 
 	// Set transport defaults for high throughput

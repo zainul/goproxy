@@ -57,14 +57,20 @@ func main() {
 	// Initialize load balancer with all backends
 	var backends []*entity.Backend
 	for _, backendConfig := range config.Backends {
+		weight := backendConfig.Weight
+		if weight <= 0 {
+			weight = 1
+		}
 		backends = append(backends, &entity.Backend{
 			URL:         backendConfig.URL,
 			IsHealthy:   true,
 			IsReady:     true,
 			SuccessRate: 1.0,
+			Weight:      weight,
 		})
 	}
-	lb := entity.NewLoadBalancer(backends)
+	lb := entity.NewLoadBalancer(backends, entity.LBStrategy(config.LoadBalancerStrategy))
+	log.Printf("Load balancer strategy: %s", config.LoadBalancerStrategy)
 
 	proxy := usecase.NewHTTPProxy(cbManager, rlManager, lb, config.EnableSingleflight, 30*time.Second, &config.Transport)
 

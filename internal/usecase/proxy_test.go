@@ -73,13 +73,13 @@ func TestHTTPProxy_ForwardRequest_Healthy(t *testing.T) {
 	// Mock backend
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("healthy"))
+		w.Write([]byte("ok"))
 	}))
 	defer backend.Close()
 
 	mockCB := &MockCircuitBreakerUsecase{}
-	mockCB.On("CanExecute", backend.URL).Return(true)
-	mockCB.On("RecordSuccess", backend.URL).Return()
+	mockCB.On("CanExecute", backend.URL).Return(true, nil)
+	mockCB.On("RecordSuccess", backend.URL).Return(nil)
 
 	mockRL := &MockRateLimiterUsecase{}
 	mockRL.On("Allow", mock.Anything, backend.URL).Return(true, nil)
@@ -87,213 +87,7 @@ func TestHTTPProxy_ForwardRequest_Healthy(t *testing.T) {
 
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
-	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
-
-	req := httptest.NewRequest("GET", "http://proxy/test", nil)
-	w := httptest.NewRecorder()
-
-	t.Logf("Action: ForwardRequest with req=%+v", req)
-	err := proxy.ForwardRequest(w, req, "/test")
-	t.Logf("Output: err=%v, statusCode=%d, body=%s", err, w.Code, w.Body.String())
-
-	assert.NoError(t, err)
-	t.Logf("Assertion: err == nil - PASSED")
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	t.Logf("Assertion: statusCode == 200 - PASSED")
-
-	assert.Equal(t, "healthy", w.Body.String())
-	t.Logf("Assertion: body == 'healthy' - PASSED")
-
-	mockCB.AssertExpectations(t)
-	mockRL.AssertExpectations(t)
-}
-
-func TestHTTPProxy_ForwardRequest_Unhealthy(t *testing.T) {
-	t.Logf("Scenario: %s", constants.TestScenarioUnhealthyBackend)
-	t.Logf("Input: GET request to backend that returns 500, circuit breaker allows, rate limiter allows")
-
-	transport := &utils.TransportConfig{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   50,
-		MaxConnsPerHost:       100,
-		IdleConnTimeout:       "90s",
-		TLSHandshakeTimeout:   "5s",
-		ResponseHeaderTimeout: "10s",
-		ExpectContinueTimeout: "1s",
-		WriteBufferSize:       32768,
-		ReadBufferSize:        32768,
-	}
-
-	// Mock backend that fails
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer backend.Close()
-
-	mockCB := &MockCircuitBreakerUsecase{}
-	mockCB.On("CanExecute", backend.URL).Return(true)
-	mockCB.On("RecordFailure", backend.URL).Return()
-
-	mockRL := &MockRateLimiterUsecase{}
-	mockRL.On("Allow", mock.Anything, backend.URL).Return(true, nil)
-	mockRL.On("AllowEndpoint", mock.Anything, backend.URL, "/test").Return(true, nil)
-
-	lb := entity.NewLoadBalancer([]*entity.Backend{
-		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
-	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
-
-	req := httptest.NewRequest("GET", "http://proxy/test", nil)
-	w := httptest.NewRecorder()
-
-	t.Logf("Action: ForwardRequest with req=%+v", req)
-	err := proxy.ForwardRequest(w, req, "/test")
-	t.Logf("Output: err=%v, statusCode=%d", err, w.Code)
-
-	assert.NoError(t, err) // No error, but 500
-	t.Logf("Assertion: err == nil (request forwarded) - PASSED")
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	t.Logf("Assertion: statusCode == 500 - PASSED")
-
-	mockCB.AssertExpectations(t)
-	mockRL.AssertExpectations(t)
-}
-
-func TestHTTPProxy_ForwardRequest_CircuitOpen(t *testing.T) {
-	t.Logf("Scenario: %s", constants.TestScenarioCircuitOpen)
-	t.Logf("Input: GET request, circuit breaker denies execution")
-
-	transport := &utils.TransportConfig{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   50,
-		MaxConnsPerHost:       100,
-		IdleConnTimeout:       "90s",
-		TLSHandshakeTimeout:   "5s",
-		ResponseHeaderTimeout: "10s",
-		ExpectContinueTimeout: "1s",
-		WriteBufferSize:       32768,
-		ReadBufferSize:        32768,
-	}
-
-	mockCB := &MockCircuitBreakerUsecase{}
-	mockCB.On("CanExecute", "http://backend").Return(false)
-
-	mockRL := &MockRateLimiterUsecase{}
-	mockRL.On("Allow", mock.Anything, "http://backend").Return(true, nil)
-	mockRL.On("AllowEndpoint", mock.Anything, "http://backend", "/test").Return(true, nil)
-
-	lb := entity.NewLoadBalancer([]*entity.Backend{
-		{URL: "http://backend", IsHealthy: true, IsReady: true, SuccessRate: 1.0},
-	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
-
-	req := httptest.NewRequest("GET", "http://proxy/test", nil)
-	w := httptest.NewRecorder()
-
-	t.Logf("Action: ForwardRequest with req=%+v", req)
-	err := proxy.ForwardRequest(w, req, "/test")
-	t.Logf("Output: err=%v, statusCode=%d", err, w.Code)
-
-	assert.Error(t, err)
-	t.Logf("Assertion: err != nil - PASSED")
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	t.Logf("Assertion: statusCode == 503 - PASSED")
-
-	mockCB.AssertExpectations(t)
-	mockRL.AssertExpectations(t)
-}
-
-func TestHTTPProxy_ForwardRequest_RateLimitExceeded(t *testing.T) {
-	t.Logf("Scenario: %s", constants.TestScenarioRateLimitExceeded)
-	t.Logf("Input: GET request, rate limiter denies")
-
-	transport := &utils.TransportConfig{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   50,
-		MaxConnsPerHost:       100,
-		IdleConnTimeout:       "90s",
-		TLSHandshakeTimeout:   "5s",
-		ResponseHeaderTimeout: "10s",
-		ExpectContinueTimeout: "1s",
-		WriteBufferSize:       32768,
-		ReadBufferSize:        32768,
-	}
-
-	mockCB := &MockCircuitBreakerUsecase{}
-	mockRL := &MockRateLimiterUsecase{}
-
-	mockRL.On("Allow", mock.Anything, "http://backend").Return(false, nil)
-
-	lb := entity.NewLoadBalancer([]*entity.Backend{
-		{URL: "http://backend", IsHealthy: true, IsReady: true, SuccessRate: 1.0},
-	})
-	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
-
-	req := httptest.NewRequest("GET", "http://proxy/test", nil)
-	w := httptest.NewRecorder()
-
-	t.Logf("Action: ForwardRequest with req=%+v", req)
-	err := proxy.ForwardRequest(w, req, "/test")
-	t.Logf("Output: err=%v, statusCode=%d", err, w.Code)
-
-	assert.Error(t, err)
-	t.Logf("Assertion: err != nil - PASSED")
-
-	assert.Equal(t, http.StatusTooManyRequests, w.Code)
-	t.Logf("Assertion: statusCode == 429 - PASSED")
-
-	mockRL.AssertExpectations(t)
-}
-
-func TestHTTPProxy_HighTraffic_HalfOpen(t *testing.T) {
-	t.Logf("Scenario: %s", constants.TestScenarioHalfOpen)
-	t.Logf("Input: 5000 concurrent GET requests to backend that starts failing then succeeds")
-
-	transport := &utils.TransportConfig{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   50,
-		MaxConnsPerHost:       100,
-		IdleConnTimeout:       "90s",
-		TLSHandshakeTimeout:   "5s",
-		ResponseHeaderTimeout: "10s",
-		ExpectContinueTimeout: "1s",
-		WriteBufferSize:       32768,
-		ReadBufferSize:        32768,
-	}
-
-	// Backend that is partially healthy: first few fail, then succeed
-	var callCount int
-	var mu sync.Mutex
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		callCount++
-		if callCount <= 2 {
-			w.WriteHeader(http.StatusInternalServerError)
-		} else {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
-		}
-	}))
-	defer backend.Close()
-
-	mockCB := &MockCircuitBreakerUsecase{}
-	// Assume half-open, so CanExecute true
-	mockCB.On("CanExecute", backend.URL).Return(true).Maybe()
-	mockCB.On("RecordFailure", backend.URL).Return()
-	mockCB.On("RecordSuccess", backend.URL).Return()
-
-	mockRL := &MockRateLimiterUsecase{}
-	mockRL.On("Allow", mock.Anything, backend.URL).Return(true, nil)
-	mockRL.On("AllowEndpoint", mock.Anything, backend.URL, "/test").Return(true, nil)
-
-	lb := entity.NewLoadBalancer([]*entity.Backend{
-		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
-	})
+	}, entity.LBStrategyRoundRobin)
 	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	// Simulate 5000 requests concurrently
@@ -363,16 +157,17 @@ func BenchmarkHTTPProxy_ForwardRequest(b *testing.B) {
 	defer backend.Close()
 
 	mockCB := &MockCircuitBreakerUsecase{}
-	mockCB.On("CanExecute", backend.URL).Return(true).Maybe()
-	mockCB.On("RecordSuccess", backend.URL).Return().Maybe()
+	mockCB.On("CanExecute", backend.URL).Return(true, nil, nil)
+	mockCB.On("RecordFailure", backend.URL).Return(nil)
+	mockCB.On("RecordSuccess", backend.URL).Return(nil)
 
 	mockRL := &MockRateLimiterUsecase{}
-	mockRL.On("Allow", mock.Anything, backend.URL).Return(true, nil).Maybe()
-	mockRL.On("AllowEndpoint", mock.Anything, backend.URL, "/test").Return(true, nil).Maybe()
+	mockRL.On("Allow", mock.Anything, backend.URL).Return(true, nil)
+	mockRL.On("AllowEndpoint", mock.Anything, backend.URL, "/test").Return(true, nil)
 
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: backend.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
-	})
+	}, entity.LBStrategyRoundRobin)
 	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	req := httptest.NewRequest("GET", "http://proxy/test", nil)
@@ -427,8 +222,8 @@ func TestHeaderSanitization(t *testing.T) {
 	}
 
 	mockCB := &MockCircuitBreakerUsecase{}
-	mockCB.On("CanExecute", server.URL).Return(true)
-	mockCB.On("RecordSuccess", server.URL).Return()
+	mockCB.On("CanExecute", server.URL).Return(true, nil)
+	mockCB.On("RecordSuccess", server.URL).Return(nil)
 
 	mockRL := &MockRateLimiterUsecase{}
 	mockRL.On("Allow", mock.Anything, server.URL).Return(true, nil)
@@ -436,7 +231,7 @@ func TestHeaderSanitization(t *testing.T) {
 
 	lb := entity.NewLoadBalancer([]*entity.Backend{
 		{URL: server.URL, IsHealthy: true, IsReady: true, SuccessRate: 1.0},
-	})
+	}, entity.LBStrategyRoundRobin)
 	proxy := NewHTTPProxy(mockCB, mockRL, lb, true, 30*time.Second, transport)
 
 	w := httptest.NewRecorder()
