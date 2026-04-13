@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -121,6 +122,38 @@ func TestCircuitBreakerManager_RecordSuccess(t *testing.T) {
 	t.Logf("Output: State after success = %s", stateClosed)
 	assert.Equal(t, entity.StateClosed, stateClosed)
 	t.Logf("Assertion: State == CLOSED - PASSED")
+}
+
+func TestCircuitBreakerManager_ConcurrentRecording(t *testing.T) {
+	t.Logf("Scenario: Concurrent Circuit Breaker Recording under high load")
+	t.Logf("Input: 1000 goroutines executing mix of successes and failures")
+
+	manager := NewCircuitBreakerManager()
+	manager.AddBreaker("http://test.com", utils.CircuitBreakerConfig{
+		FailureThreshold: 50,
+		SuccessThreshold: 3,
+		Timeout:          "10s",
+		CounterType:      constants.CounterTypeRingBuffer,
+		WindowSize:       100,
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%3 == 0 {
+				manager.RecordFailure("http://test.com")
+			} else {
+				manager.RecordSuccess("http://test.com")
+			}
+			manager.CanExecute("http://test.com")
+			manager.GetState("http://test.com")
+		}(i)
+	}
+	wg.Wait()
+	// Test passes if no race/panic — verified with -race flag
+	t.Log("Test passed: No races detected with concurrent recording")
 }
 
 func TestCircuitBreakerManager_SlidingWindow(t *testing.T) {

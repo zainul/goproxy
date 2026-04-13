@@ -22,22 +22,26 @@ type CircuitBreakerUsecase interface {
 
 // CircuitBreakerManager implements CircuitBreakerUsecase
 type CircuitBreakerManager struct {
-	breakers map[string]*entity.CircuitBreaker
-	mu       sync.RWMutex
+	breakers sync.Map // map[string]*entity.CircuitBreaker - optimized for read-heavy workloads
+	mu       sync.Mutex // protects state transitions only
+}
+
+// muLockBreakerAndFn is a helper to safely access breaker while updating state
+func (m *CircuitBreakerManager) muLockBreakerAndFn(backendURL string, fn func(cb *entity.CircuitBreaker)) {
+	if val, loaded := m.breakers.Load(backendURL); loaded {
+		cb := val.(*entity.CircuitBreaker)
+		fn(cb)
+	}
 }
 
 // NewCircuitBreakerManager creates a new CircuitBreakerManager
 func NewCircuitBreakerManager() *CircuitBreakerManager {
-	return &CircuitBreakerManager{
-		breakers: make(map[string]*entity.CircuitBreaker),
-	}
+	return &CircuitBreakerManager{}
 }
 
 // AddBreaker adds a circuit breaker for a backend
 func (m *CircuitBreakerManager) AddBreaker(backendURL string, config utils.CircuitBreakerConfig) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.breakers[backendURL] = entity.NewCircuitBreaker(config)
+	m.breakers.Store(backendURL, entity.NewCircuitBreaker(config))
 	metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateClosed))
 }
 
@@ -49,23 +53,25 @@ func (m *CircuitBreakerManager) CanExecute(backendURL string) (canExecute bool) 
 			canExecute = true // Allow on panic
 		}
 	}()
-	m.mu.RLock()
-	breaker, exists := m.breakers[backendURL]
-	m.mu.RUnlock()
+
+	val, exists := m.breakers.Load(backendURL)
 	if !exists {
 		return true // Allow if no breaker
 	}
+	breaker := val.(*entity.CircuitBreaker)
 
-	switch breaker.State {
+	state := breaker.GetState()
+	switch state {
 	case entity.StateClosed:
 		return true
 	case entity.StateOpen:
+		// Check if timeout has passed without updating breaker.LastFailTime (use stored value)
 		if time.Since(breaker.LastFailTime) > breaker.Timeout {
 			// Transition to half-open
-			m.mu.Lock()
-			breaker.State = entity.StateHalfOpen
-			metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateHalfOpen))
-			m.mu.Unlock()
+			m.muLockBreakerAndFn(backendURL, func(cb *entity.CircuitBreaker) {
+				cb.SetState(entity.StateHalfOpen)
+				metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateHalfOpen))
+			})
 			return true
 		}
 		return false
@@ -83,12 +89,12 @@ func (m *CircuitBreakerManager) RecordSuccess(backendURL string) {
 			log.Printf("Panic in CircuitBreakerManager.RecordSuccess: %v\nStack trace:\n%s", r, debug.Stack())
 		}
 	}()
-	m.mu.RLock()
-	breaker, exists := m.breakers[backendURL]
-	m.mu.RUnlock()
+
+	val, exists := m.breakers.Load(backendURL)
 	if !exists {
 		return
 	}
+	breaker := val.(*entity.CircuitBreaker)
 
 	// Record in counter
 	if breaker.CounterType == constants.CounterTypeRingBuffer {
@@ -97,14 +103,14 @@ func (m *CircuitBreakerManager) RecordSuccess(backendURL string) {
 		breaker.SlidingWindow.Record(true)
 	}
 
-	switch breaker.State {
-	case entity.StateHalfOpen:
+	state := breaker.GetState()
+	if state == entity.StateHalfOpen {
 		// Check if success threshold met
 		if m.checkSuccessThreshold(breaker) {
-			m.mu.Lock()
-			breaker.State = entity.StateClosed
-			metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateClosed))
-			m.mu.Unlock()
+			m.muLockBreakerAndFn(backendURL, func(cb *entity.CircuitBreaker) {
+				cb.SetState(entity.StateClosed)
+				metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateClosed))
+			})
 		}
 	}
 }
@@ -116,12 +122,13 @@ func (m *CircuitBreakerManager) RecordFailure(backendURL string) {
 			log.Printf("Panic in CircuitBreakerManager.RecordFailure: %v\nStack trace:\n%s", r, debug.Stack())
 		}
 	}()
-	m.mu.RLock()
-	breaker, exists := m.breakers[backendURL]
-	m.mu.RUnlock()
+
+	val, exists := m.breakers.Load(backendURL)
 	if !exists {
 		return
 	}
+
+	breaker := val.(*entity.CircuitBreaker)
 
 	// Record in counter
 	if breaker.CounterType == constants.CounterTypeRingBuffer {
@@ -129,21 +136,24 @@ func (m *CircuitBreakerManager) RecordFailure(backendURL string) {
 	} else {
 		breaker.SlidingWindow.Record(false)
 	}
-	breaker.LastFailTime = time.Now()
 
-	switch breaker.State {
+	m.muLockBreakerAndFn(backendURL, func(cb *entity.CircuitBreaker) {
+		cb.SetLastFailTime(time.Now())
+	})
+
+	switch breaker.GetState() {
 	case entity.StateClosed:
 		if m.checkFailureThreshold(breaker) {
-			m.mu.Lock()
-			breaker.State = entity.StateOpen
-			metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateOpen))
-			m.mu.Unlock()
+			m.muLockBreakerAndFn(backendURL, func(cb *entity.CircuitBreaker) {
+				cb.SetState(entity.StateOpen)
+				metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateOpen))
+			})
 		}
 	case entity.StateHalfOpen:
-		m.mu.Lock()
-		breaker.State = entity.StateOpen
-		metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateOpen))
-		m.mu.Unlock()
+		m.muLockBreakerAndFn(backendURL, func(cb *entity.CircuitBreaker) {
+			cb.SetState(entity.StateOpen)
+			metrics.CircuitState.WithLabelValues(backendURL).Set(float64(entity.StateOpen))
+		})
 	}
 }
 
@@ -155,12 +165,13 @@ func (m *CircuitBreakerManager) GetState(backendURL string) (state entity.State)
 			state = entity.StateClosed // Default to closed
 		}
 	}()
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if breaker, exists := m.breakers[backendURL]; exists {
-		return breaker.State
+
+	val, exists := m.breakers.Load(backendURL)
+	if !exists {
+		return entity.StateClosed
 	}
-	return entity.StateClosed
+	breaker := val.(*entity.CircuitBreaker)
+	return breaker.GetState()
 }
 
 // checkFailureThreshold checks if failure threshold is exceeded

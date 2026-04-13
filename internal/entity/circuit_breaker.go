@@ -36,7 +36,7 @@ func (s State) String() string {
 type CounterType string
 
 const (
-	CounterRingBuffer   CounterType = "ringbuffer"
+	CounterRingBuffer    CounterType = "ringbuffer"
 	CounterSlidingWindow CounterType = "sliding_window"
 )
 
@@ -48,16 +48,16 @@ type Metric struct {
 
 // RingBufferCounter implements a fixed-size circular buffer counter
 type RingBufferCounter struct {
-	buffer []bool // true for success, false for failure
+	buffer []int32 // 1 = success, 0 = failure (atomic-safe)
 	size   int
-	index  int32 // atomic for concurrency
-	count  int32 // atomic count of entries
+	index  int32
+	count  int32
 }
 
 // NewRingBufferCounter creates a new RingBufferCounter
 func NewRingBufferCounter(size int) *RingBufferCounter {
 	return &RingBufferCounter{
-		buffer: make([]bool, size),
+		buffer: make([]int32, size),
 		size:   size,
 	}
 }
@@ -65,17 +65,25 @@ func NewRingBufferCounter(size int) *RingBufferCounter {
 // Record adds a new metric to the buffer
 func (r *RingBufferCounter) Record(success bool) {
 	idx := atomic.AddInt32(&r.index, 1) % int32(r.size)
-	atomic.StoreInt32(&r.count, min(atomic.LoadInt32(&r.count)+1, int32(r.size)))
-	r.buffer[idx] = success
+	currentCount := atomic.LoadInt32(&r.count)
+	if currentCount < int32(r.size) {
+		atomic.CompareAndSwapInt32(&r.count, currentCount, currentCount+1)
+	}
+	val := int32(0)
+	if success {
+		val = 1
+	}
+	atomic.StoreInt32(&r.buffer[idx], val)
 }
 
 // CountFailures returns the number of failures in the buffer
 func (r *RingBufferCounter) CountFailures() int {
 	failures := 0
 	count := int(atomic.LoadInt32(&r.count))
+	currentIdx := int(atomic.LoadInt32(&r.index))
 	for i := 0; i < count; i++ {
-		idx := (int(atomic.LoadInt32(&r.index)) - i + r.size) % r.size
-		if !r.buffer[idx] {
+		idx := (currentIdx - i + r.size) % r.size
+		if atomic.LoadInt32(&r.buffer[idx]) == 0 {
 			failures++
 		}
 	}
@@ -89,65 +97,99 @@ func (r *RingBufferCounter) WindowSize() int {
 
 // SlidingWindowCounter implements a time-based sliding window counter
 type SlidingWindowCounter struct {
-	window  time.Duration
-	metrics []Metric
-	mu      sync.RWMutex
+	window     time.Duration
+	metrics    []Metric
+	mu         sync.Mutex // Use Mutex, not RWMutex — RWMutex has higher overhead for short critical sections
+	totalCount int64      // atomic
+	failCount  int64      // atomic — for fast FailureRate without lock
 }
 
 // NewSlidingWindowCounter creates a new SlidingWindowCounter
 func NewSlidingWindowCounter(window time.Duration) *SlidingWindowCounter {
 	return &SlidingWindowCounter{
 		window:  window,
-		metrics: make([]Metric, 0),
+		metrics: make([]Metric, 0, 128), // Pre-allocate to reduce early reallocations
 	}
 }
 
 // Record adds a new metric
 func (s *SlidingWindowCounter) Record(success bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := time.Now()
+
+	s.mu.Lock()
 	s.metrics = append(s.metrics, Metric{Timestamp: now, Success: success})
-	// Clean old metrics
+
+	// Cleanup expired entries
 	cutoff := now.Add(-s.window)
-	for len(s.metrics) > 0 && s.metrics[0].Timestamp.Before(cutoff) {
-		s.metrics = s.metrics[1:]
+	cutIdx := 0
+	for cutIdx < len(s.metrics) && s.metrics[cutIdx].Timestamp.Before(cutoff) {
+		cutIdx++
+	}
+	if cutIdx > 0 {
+		// Remove expired entries and count removed failures
+		removedFailures := int64(0)
+		for i := 0; i < cutIdx; i++ {
+			if !s.metrics[i].Success {
+				removedFailures++
+			}
+		}
+		s.metrics = s.metrics[cutIdx:]
+		atomic.AddInt64(&s.failCount, -removedFailures)
+	}
+	s.mu.Unlock()
+
+	// Update atomic counters outside the lock
+	atomic.AddInt64(&s.totalCount, 1)
+	if !success {
+		atomic.AddInt64(&s.failCount, 1)
 	}
 }
 
 // FailureRate returns the failure rate in the window
 func (s *SlidingWindowCounter) FailureRate() float64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if len(s.metrics) == 0 {
+	total := atomic.LoadInt64(&s.totalCount)
+	if total == 0 {
 		return 0.0
 	}
-	failures := 0
-	for _, m := range s.metrics {
-		if !m.Success {
-			failures++
-		}
-	}
-	return float64(failures) / float64(len(s.metrics))
+	failures := atomic.LoadInt64(&s.failCount)
+	return float64(failures) / float64(total)
 }
 
 // CircuitBreaker represents a circuit breaker for a backend
 type CircuitBreaker struct {
-	State            State
+	state            int32 // atom
 	FailureThreshold float64
 	SuccessThreshold float64
 	Timeout          time.Duration
 	LastFailTime     time.Time
+	lastFailMu       sync.Mutex // protects LastFailTime only
 	CounterType      CounterType
 	RingBuffer       *RingBufferCounter
 	SlidingWindow    *SlidingWindowCounter
+}
+
+// GetState returns the current state atomically
+func (cb *CircuitBreaker) GetState() State {
+	return State(atomic.LoadInt32(&cb.state))
+}
+
+// SetState updates the state atomically
+func (cb *CircuitBreaker) SetState(s State) {
+	atomic.StoreInt32(&cb.state, int32(s))
+}
+
+// SetLastFailTime safely updates the last failure time
+func (cb *CircuitBreaker) SetLastFailTime(t time.Time) {
+	cb.lastFailMu.Lock()
+	cb.LastFailTime = t
+	cb.lastFailMu.Unlock()
 }
 
 // NewCircuitBreaker creates a new CircuitBreaker
 func NewCircuitBreaker(config utils.CircuitBreakerConfig) *CircuitBreaker {
 	timeout, _ := time.ParseDuration(config.Timeout)
 	cb := &CircuitBreaker{
-		State:            StateClosed,
+		state:            0,
 		FailureThreshold: config.FailureThreshold,
 		SuccessThreshold: config.SuccessThreshold,
 		Timeout:          timeout,
@@ -160,8 +202,6 @@ func NewCircuitBreaker(config utils.CircuitBreakerConfig) *CircuitBreaker {
 	}
 	return cb
 }
-
-
 
 // min is a helper function
 func min(a, b int32) int32 {
