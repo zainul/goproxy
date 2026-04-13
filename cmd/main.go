@@ -81,10 +81,11 @@ func main() {
 	hctx, hcancel := context.WithCancel(context.Background())
 	go healthChecker.Start(hctx, config.Backends)
 
-	// HTTP handlers with panic recovery
-	http.Handle("/metrics", middleware.PanicRecovery(promhttp.Handler()))
+	// Use a dedicated ServeMux instead of DefaultServeMux
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", middleware.PanicRecovery(promhttp.Handler()))
 
-	http.Handle("/", middleware.PanicRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/", middleware.PanicRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(config.Backends) == 0 {
 			http.Error(w, "No backends configured", http.StatusInternalServerError)
 			return
@@ -95,9 +96,20 @@ func main() {
 		}
 	})))
 
+	// Parse server timeouts
+	readTimeout, _ := time.ParseDuration(config.Server.ReadTimeout)
+	writeTimeout, _ := time.ParseDuration(config.Server.WriteTimeout)
+	readHeaderTimeout, _ := time.ParseDuration(config.Server.ReadHeaderTimeout)
+	idleTimeout, _ := time.ParseDuration(config.Server.IdleTimeout)
+
 	server := &http.Server{
-		Addr:    config.ListenAddr,
-		Handler: http.DefaultServeMux,
+		Addr:              config.ListenAddr,
+		Handler:           mux,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    config.Server.MaxHeaderBytes,
 	}
 
 	// Channel to listen for interrupt signal
