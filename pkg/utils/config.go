@@ -55,6 +55,7 @@ type BackendConfig struct {
 	HealthCheckEndpoint string               `json:"health_check_endpoint" yaml:"health_check_endpoint"`
 	ReadinessEndpoint   string               `json:"readiness_endpoint" yaml:"readiness_endpoint"`
 	StatisticsEndpoint  string               `json:"statistics_endpoint" yaml:"statistics_endpoint"` // Optional
+	Timeout             string               `json:"timeout" yaml:"timeout"`                         // Per-backend timeout for request propagation
 }
 
 // RedisConfig holds Redis configuration
@@ -252,6 +253,14 @@ func ValidateConfig(config *Config) error {
 
 			if endpoint.RateLimiter.Window <= 0 {
 				errors = append(errors, fmt.Sprintf("backends[%d].endpoints[%d].rate_limiter.window must be positive", i, j))
+			}
+		}
+
+		// Validate backend timeout
+		if backend.Timeout != "" {
+			_, durErr := time.ParseDuration(backend.Timeout)
+			if durErr != nil {
+				errors = append(errors, fmt.Sprintf("backends[%d].timeout is invalid: %v", i, durErr))
 			}
 		}
 	}

@@ -68,6 +68,16 @@ func main() {
 
 	proxy := usecase.NewHTTPProxy(cbManager, rlManager, lb, config.EnableSingleflight, 30*time.Second, &config.Transport)
 
+	// Set per-backend timeouts from config
+	for _, backend := range config.Backends {
+		if timeoutStr := backend.Timeout; timeoutStr != "" {
+			timeout, err := time.ParseDuration(timeoutStr)
+			if err == nil && timeout > 0 {
+				proxy.SetBackendTimeout(backend.URL, timeout)
+			}
+		}
+	}
+
 	// Add circuit breakers and rate limiters for backends
 	for _, backend := range config.Backends {
 		cbManager.AddBreaker(backend.URL, backend.CircuitBreaker)

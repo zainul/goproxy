@@ -55,7 +55,8 @@
       ],
       "health_check_endpoint": "/health",
       "readiness_endpoint": "/ready",
-      "statistics_endpoint": "/stats"
+      "statistics_endpoint": "/stats",
+      "timeout": "15s"
     }
   ],
   "server": {

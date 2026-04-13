@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -58,6 +59,7 @@ type HTTPProxy struct {
 	lb                 *entity.LoadBalancer
 	sf                 singleflight.Group
 	enableSingleflight bool
+	timeoutByBackend   map[string]time.Duration // Per-backend request propagation timeouts
 	httpClient         *http.Client
 }
 
@@ -83,16 +85,36 @@ func NewHTTPProxy(cbManager CircuitBreakerUsecase, rlManager RateLimiterUsecase,
 		ForceAttemptHTTP2:     true,
 	}
 
-	return &HTTPProxy{
+	proxy := &HTTPProxy{
 		cbManager:          cbManager,
 		rlManager:          rlManager,
 		lb:                 lb,
+		sf:                 singleflight.Group{},
 		enableSingleflight: enableSingleflight,
+		timeoutByBackend:   nil, // Per-backend timeouts set after initialization
 		httpClient: &http.Client{
 			Timeout:   timeout,
 			Transport: t,
 		},
 	}
+
+	return proxy
+}
+
+// SetBackendTimeout sets a per-backend timeout for request propagation
+func (p *HTTPProxy) SetBackendTimeout(backendURL string, timeout time.Duration) {
+	p.timeoutByBackend = make(map[string]time.Duration)
+	p.timeoutByBackend[backendURL] = timeout
+}
+
+// getBackendTimeout retrieves the timeout for a backend, falling back to global default
+func (p *HTTPProxy) getBackendTimeout(backendURL string) time.Duration {
+	if p.timeoutByBackend != nil {
+		if t, ok := p.timeoutByBackend[backendURL]; ok {
+			return t
+		}
+	}
+	return p.httpClient.Timeout
 }
 
 // ForwardRequest forwards the request to the backend
@@ -154,6 +176,15 @@ func (p *HTTPProxy) ForwardRequest(w http.ResponseWriter, r *http.Request, endpo
 		metrics.TrafficBlocked.WithLabelValues(backendURL, endpoint, "circuit_breaker").Inc()
 		http.Error(w, constants.ErrCircuitBreakerOpenUser, http.StatusServiceUnavailable)
 		return errors.NewCircuitBreakerOpenError(backendURL, nil)
+	}
+
+	// Wrap request context with per-backend timeout for request propagation
+	ctx := r.Context()
+	timeout := p.getBackendTimeout(backendURL)
+	if timeout > 0 {
+		var cancel func()
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 
 	// Use singleflight only for GET requests if enabled
